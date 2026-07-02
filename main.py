@@ -23,9 +23,11 @@ import sys
 from pathlib import Path
 
 from loguru import logger
-from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
+from terminal_compat import build_console, ensure_utf8_output
+
+ensure_utf8_output()
 
 # ── Logger config — log ra file + console ─────────────────────────────
 logger.remove()  # Xóa default handler
@@ -39,7 +41,7 @@ logger.add(
 # Console handler: chỉ WARNING trở lên (để không spam Rich panels)
 logger.add(sys.stderr, format="{time:HH:mm:ss} | {level} | {message}", level="WARNING")
 
-console = Console()
+console = build_console()
 
 
 def parse_args():

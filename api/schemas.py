@@ -58,7 +58,7 @@ class ProcessIncidentResponse(BaseModel):
     @classmethod
     def from_workflow_result(cls, result: WorkflowResult) -> "ProcessIncidentResponse":
         return cls(
-            response=result.response,
+            response=redact_incident_response(result.response),
             report=ReportArtifactsResponse.from_workflow_result(result),
         )
 
@@ -106,3 +106,43 @@ class IncidentRecordResponse(BaseModel):
     alert: MalwareAlert
     response: IncidentResponse
     report: StoredReportResponse
+
+
+_REDACTED_FIELDS = {
+    "username",
+    "command_line",
+    "file_hash",
+    "file_path",
+}
+
+
+def redact_incident_response(response: IncidentResponse) -> IncidentResponse:
+    payload = response.model_dump(mode="python")
+    _redact_alert_payload(payload.get("enriched_alert", {}).get("original_alert", {}))
+    return IncidentResponse.model_validate(payload)
+
+
+def redact_incident_record(record: dict) -> dict:
+    sanitized = dict(record)
+    _redact_alert_payload(sanitized.get("alert", {}))
+    _redact_alert_payload(
+        sanitized.get("response", {}).get("enriched_alert", {}).get("original_alert", {})
+    )
+    return sanitized
+
+
+def _redact_alert_payload(payload: dict) -> None:
+    for field in _REDACTED_FIELDS:
+        if field in payload:
+            payload[field] = _redacted_value(field, payload[field])
+
+
+def _redacted_value(field: str, current_value: object) -> str:
+    if field == "file_hash":
+        raw = str(current_value)
+        if len(raw) in (32, 40, 64):
+            return "0" * len(raw)
+        return "0" * 64
+    if field == "file_path":
+        return "[redacted-path]"
+    return "[redacted]"

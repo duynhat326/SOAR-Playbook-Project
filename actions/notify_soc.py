@@ -15,12 +15,12 @@ Trong thực tế:
 from datetime import datetime
 
 from loguru import logger
-from rich.console import Console
 from rich.panel import Panel
 
 from schemas.alert import ActionResult, ResponseAction
+from terminal_compat import build_console
 
-console = Console()
+console = build_console()
 
 
 def execute(

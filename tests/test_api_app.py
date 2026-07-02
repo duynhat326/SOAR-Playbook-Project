@@ -12,7 +12,7 @@ def test_health_endpoint_returns_ok():
     assert payload["status"] == "ok"
 
 
-def test_process_scenario_endpoint_runs_pipeline_without_report(tmp_path, monkeypatch):
+def test_process_scenario_endpoint_runs_pipeline_without_report(tmp_path, monkeypatch, incident_operator_principal):
     test_service = SoarWorkflowService(
         verbose=False,
         db_path=tmp_path / "soar.db",
@@ -25,14 +25,15 @@ def test_process_scenario_endpoint_runs_pipeline_without_report(tmp_path, monkey
             seed=2024,
             generate_report=False,
             export_pdf=False,
-        )
+        ),
+        principal=incident_operator_principal,
     )
 
     assert response.response.ticket_id is not None
     assert response.report.html_path is None
 
 
-def test_get_incident_by_alert_id_returns_persisted_record(tmp_path, monkeypatch):
+def test_get_incident_by_alert_id_returns_persisted_record(tmp_path, monkeypatch, incident_operator_principal):
     test_service = SoarWorkflowService(
         verbose=False,
         db_path=tmp_path / "soar.db",
@@ -45,17 +46,25 @@ def test_get_incident_by_alert_id_returns_persisted_record(tmp_path, monkeypatch
             seed=2025,
             generate_report=False,
             export_pdf=False,
-        )
+        ),
+        principal=incident_operator_principal,
     )
 
-    incident = api_app.get_incident_by_alert_id(response.response.alert_id)
+    incident = api_app.get_incident_by_alert_id(
+        response.response.alert_id,
+        principal=incident_operator_principal,
+    )
 
     assert incident.alert_id == response.response.alert_id
     assert incident.ticket_id == response.response.ticket_id
     assert incident.response.ticket_id == response.response.ticket_id
+    assert incident.alert.username == "[redacted]"
+    assert incident.alert.command_line == "[redacted]"
+    assert set(incident.alert.file_hash) == {"0"}
+    assert len(incident.alert.file_hash) in (32, 40, 64)
 
 
-def test_get_incident_by_ticket_id_returns_persisted_record(tmp_path, monkeypatch):
+def test_get_incident_by_ticket_id_returns_persisted_record(tmp_path, monkeypatch, incident_operator_principal):
     test_service = SoarWorkflowService(
         verbose=False,
         db_path=tmp_path / "soar.db",
@@ -68,19 +77,24 @@ def test_get_incident_by_ticket_id_returns_persisted_record(tmp_path, monkeypatc
             seed=2026,
             generate_report=False,
             export_pdf=False,
-        )
+        ),
+        principal=incident_operator_principal,
     )
 
     assert response.response.ticket_id is not None
 
-    incident = api_app.get_incident_by_ticket_id(response.response.ticket_id)
+    incident = api_app.get_incident_by_ticket_id(
+        response.response.ticket_id,
+        principal=incident_operator_principal,
+    )
 
     assert incident.alert_id == response.response.alert_id
     assert incident.ticket_id == response.response.ticket_id
     assert incident.report.html_path is None
+    assert incident.response.enriched_alert.original_alert.command_line == "[redacted]"
 
 
-def test_get_incident_by_ticket_id_raises_404_when_missing(tmp_path, monkeypatch):
+def test_get_incident_by_ticket_id_raises_404_when_missing(tmp_path, monkeypatch, incident_operator_principal):
     test_service = SoarWorkflowService(
         verbose=False,
         db_path=tmp_path / "soar.db",
@@ -88,12 +102,15 @@ def test_get_incident_by_ticket_id_raises_404_when_missing(tmp_path, monkeypatch
     monkeypatch.setattr(api_app, "get_workflow_service", lambda: test_service)
 
     with pytest.raises(HTTPException) as exc_info:
-        api_app.get_incident_by_ticket_id("ticket-missing")
+        api_app.get_incident_by_ticket_id(
+            "ticket-missing",
+            principal=incident_operator_principal,
+        )
 
     assert exc_info.value.status_code == 404
 
 
-def test_list_incidents_returns_recent_summaries_with_limit(tmp_path, monkeypatch):
+def test_list_incidents_returns_recent_summaries_with_limit(tmp_path, monkeypatch, incident_operator_principal):
     test_service = SoarWorkflowService(
         verbose=False,
         db_path=tmp_path / "soar.db",
@@ -106,7 +123,8 @@ def test_list_incidents_returns_recent_summaries_with_limit(tmp_path, monkeypatc
             seed=5050,
             generate_report=False,
             export_pdf=False,
-        )
+        ),
+        principal=incident_operator_principal,
     )
     second = api_app.process_scenario(
         ProcessScenarioRequest(
@@ -114,17 +132,18 @@ def test_list_incidents_returns_recent_summaries_with_limit(tmp_path, monkeypatc
             seed=6060,
             generate_report=False,
             export_pdf=False,
-        )
+        ),
+        principal=incident_operator_principal,
     )
 
-    incidents = api_app.list_incidents(limit=1)
+    incidents = api_app.list_incidents(limit=1, principal=incident_operator_principal)
 
     assert len(incidents) == 1
     assert incidents[0].alert_id == second.response.alert_id
     assert incidents[0].alert_id != first.response.alert_id
 
 
-def test_list_incidents_applies_optional_filters(tmp_path, monkeypatch):
+def test_list_incidents_applies_optional_filters(tmp_path, monkeypatch, incident_operator_principal):
     test_service = SoarWorkflowService(
         verbose=False,
         db_path=tmp_path / "soar.db",
@@ -137,7 +156,8 @@ def test_list_incidents_applies_optional_filters(tmp_path, monkeypatch):
             seed=7070,
             generate_report=False,
             export_pdf=False,
-        )
+        ),
+        principal=incident_operator_principal,
     )
     mixed = api_app.process_scenario(
         ProcessScenarioRequest(
@@ -145,7 +165,8 @@ def test_list_incidents_applies_optional_filters(tmp_path, monkeypatch):
             seed=8080,
             generate_report=False,
             export_pdf=False,
-        )
+        ),
+        principal=incident_operator_principal,
     )
 
     incidents = api_app.list_incidents(
@@ -154,6 +175,7 @@ def test_list_incidents_applies_optional_filters(tmp_path, monkeypatch):
         risk_level=mixed.response.enriched_alert.risk_level,
         status="completed",
         ticket_id=mixed.response.ticket_id,
+        principal=incident_operator_principal,
     )
 
     assert len(incidents) == 1
@@ -161,7 +183,11 @@ def test_list_incidents_applies_optional_filters(tmp_path, monkeypatch):
     assert incidents[0].alert_id != benign.response.alert_id
 
 
-def test_process_scenario_replays_existing_incident_without_new_side_effects(tmp_path, monkeypatch):
+def test_process_scenario_replays_existing_incident_without_new_side_effects(
+    tmp_path,
+    monkeypatch,
+    incident_operator_principal,
+):
     test_service = SoarWorkflowService(
         verbose=False,
         db_path=tmp_path / "soar.db",
@@ -175,8 +201,8 @@ def test_process_scenario_replays_existing_incident_without_new_side_effects(tmp
         export_pdf=False,
     )
 
-    first = api_app.process_incident(request)
-    second = api_app.process_incident(request)
+    first = api_app.process_incident(request, principal=incident_operator_principal)
+    second = api_app.process_incident(request, principal=incident_operator_principal)
 
     assert first.response.ticket_id == second.response.ticket_id
     assert first.response.completed_at == second.response.completed_at
@@ -190,3 +216,4 @@ def test_list_incidents_openapi_exposes_limit_validation():
     assert limit_parameter["schema"]["default"] == 50
     assert limit_parameter["schema"]["minimum"] == 1
     assert limit_parameter["schema"]["maximum"] == 200
+    assert "HTTPBearer" in schema["components"]["securitySchemes"]

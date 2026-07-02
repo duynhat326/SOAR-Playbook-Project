@@ -10,6 +10,7 @@ from a2a.schemas import (
     WorkspaceCreateRequest,
 )
 from api.app import (
+    a2a_health,
     claim_task,
     complete_task,
     create_task,
@@ -22,14 +23,18 @@ from api.app import (
     register_agent,
     timeline,
 )
+from security import ROLE_A2A_AGENT
 
 
-def test_a2a_api_end_to_end(tmp_path: Path, monkeypatch):
+def test_a2a_api_end_to_end(tmp_path: Path, monkeypatch, a2a_admin_principal, principal_factory):
     monkeypatch.setenv("SOAR_A2A_DB_PATH", str(tmp_path / "a2a-api.db"))
     get_a2a_service.cache_clear()
 
     try:
-        workspace = ensure_workspace(WorkspaceCreateRequest(workspace="triage-room"))
+        workspace = ensure_workspace(
+            WorkspaceCreateRequest(workspace="triage-room"),
+            principal=a2a_admin_principal,
+        )
         assert workspace.workspace == "triage-room"
 
         codex = register_agent(
@@ -39,7 +44,8 @@ def test_a2a_api_end_to_end(tmp_path: Path, monkeypatch):
                 platform="codex",
                 role="lead",
                 capabilities=["plan", "review"],
-            )
+            ),
+            principal=a2a_admin_principal,
         )
         claude = register_agent(
             AgentRegistrationRequest(
@@ -48,7 +54,22 @@ def test_a2a_api_end_to_end(tmp_path: Path, monkeypatch):
                 platform="claude",
                 role="worker",
                 capabilities=["analysis"],
-            )
+            ),
+            principal=a2a_admin_principal,
+        )
+        codex_principal = principal_factory(
+            "codex-tab-1",
+            principal_type="agent",
+            agent_id="codex-tab-1",
+            roles=[ROLE_A2A_AGENT],
+            workspaces=["triage-room"],
+        )
+        claude_principal = principal_factory(
+            "claude-tab-1",
+            principal_type="agent",
+            agent_id="claude-tab-1",
+            roles=[ROLE_A2A_AGENT],
+            workspaces=["triage-room"],
         )
         assert codex.agent_id == "codex-tab-1"
         assert claude.agent_id == "claude-tab-1"
@@ -61,9 +82,14 @@ def test_a2a_api_end_to_end(tmp_path: Path, monkeypatch):
                 requested_by="codex-tab-1",
                 priority="high",
                 labels=["review"],
-            )
+            ),
+            principal=codex_principal,
         )
-        claim = claim_task(task.task_id, TaskClaimRequest(agent_id="claude-tab-1"))
+        claim = claim_task(
+            task.task_id,
+            TaskClaimRequest(agent_id="claude-tab-1"),
+            principal=claude_principal,
+        )
         assert claim.status == "in_progress"
 
         message = post_message(
@@ -74,11 +100,17 @@ def test_a2a_api_end_to_end(tmp_path: Path, monkeypatch):
                 task_id=task.task_id,
                 kind="brief",
                 content="Keep the SOAR pipeline stable. Touch only the collaboration layer.",
-            )
+            ),
+            principal=codex_principal,
         )
         assert message.kind == "brief"
 
-        inbox = poll_messages(workspace="triage-room", agent_id="claude-tab-1", limit=10)
+        inbox = poll_messages(
+            workspace="triage-room",
+            agent_id="claude-tab-1",
+            limit=10,
+            principal=claude_principal,
+        )
         assert len(inbox) == 1
 
         artifact = publish_artifact(
@@ -89,7 +121,8 @@ def test_a2a_api_end_to_end(tmp_path: Path, monkeypatch):
                 kind="report",
                 uri="output/review.txt",
                 summary="Behavioral review notes.",
-            )
+            ),
+            principal=claude_principal,
         )
         assert artifact.kind == "report"
 
@@ -99,15 +132,25 @@ def test_a2a_api_end_to_end(tmp_path: Path, monkeypatch):
                 agent_id="claude-tab-1",
                 result_summary="Reviewed and handed back to Codex.",
             ),
+            principal=claude_principal,
         )
         assert done.status == "completed"
 
-        event_types = {item.event_type for item in timeline(workspace="triage-room", limit=20)}
+        event_types = {
+            item.event_type
+            for item in timeline(
+                workspace="triage-room",
+                limit=20,
+                principal=a2a_admin_principal,
+            )
+        }
         assert "task.created" in event_types
         assert "message.posted" in event_types
         assert "artifact.published" in event_types
 
-        agents = list_agents(workspace="triage-room")
+        agents = list_agents(workspace="triage-room", principal=a2a_admin_principal)
         assert len(agents) == 2
+        health = a2a_health(principal=a2a_admin_principal)
+        assert "db_path" not in health
     finally:
         get_a2a_service.cache_clear()

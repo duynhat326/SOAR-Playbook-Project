@@ -14,6 +14,7 @@ from a2a.schemas import (
     WorkspaceCreateRequest,
 )
 from a2a.service import A2AService
+from security import resolve_cli_principal
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Local A2A collaboration bus for Codex, Claude, Gemini, and other agents."
     )
     parser.add_argument("--db", default=None, help="Override SQLite bus path.")
+    parser.add_argument("--token", default=None, help="Bearer token or SOAR_AUTH_TOKEN fallback.")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -104,9 +106,15 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     service = A2AService(args.db)
+    principal = resolve_cli_principal(args.token)
 
     if args.command == "ensure-workspace":
-        emit(service.ensure_workspace(WorkspaceCreateRequest(workspace=args.workspace)).model_dump())
+        emit(
+            service.ensure_workspace(
+                WorkspaceCreateRequest(workspace=args.workspace),
+                principal=principal,
+            ).model_dump()
+        )
         return
 
     if args.command == "register-agent":
@@ -120,7 +128,8 @@ def main() -> None:
                     status=args.status,
                     capabilities=args.capability,
                     metadata=json.loads(args.metadata),
-                )
+                ),
+                principal=principal,
             ).model_dump()
         )
         return
@@ -130,12 +139,13 @@ def main() -> None:
             service.heartbeat_agent(
                 args.agent_id,
                 AgentHeartbeatRequest(status=args.status).status,
+                principal=principal,
             ).model_dump()
         )
         return
 
     if args.command == "list-agents":
-        emit([item.model_dump() for item in service.list_agents(args.workspace)])
+        emit([item.model_dump() for item in service.list_agents(args.workspace, principal=principal)])
         return
 
     if args.command == "create-task":
@@ -149,17 +159,29 @@ def main() -> None:
                     assigned_to=args.assigned_to,
                     priority=args.priority,
                     labels=args.label,
-                )
+                ),
+                principal=principal,
             ).model_dump()
         )
         return
 
     if args.command == "list-tasks":
-        emit([item.model_dump() for item in service.list_tasks(args.workspace, args.status)])
+        emit(
+            [
+                item.model_dump()
+                for item in service.list_tasks(args.workspace, args.status, principal=principal)
+            ]
+        )
         return
 
     if args.command == "claim-task":
-        emit(service.claim_task(args.task_id, TaskClaimRequest(agent_id=args.agent_id)).model_dump())
+        emit(
+            service.claim_task(
+                args.task_id,
+                TaskClaimRequest(agent_id=args.agent_id),
+                principal=principal,
+            ).model_dump()
+        )
         return
 
     if args.command == "complete-task":
@@ -167,6 +189,7 @@ def main() -> None:
             service.complete_task(
                 args.task_id,
                 TaskCompleteRequest(agent_id=args.agent_id, result_summary=args.summary),
+                principal=principal,
             ).model_dump()
         )
         return
@@ -182,7 +205,8 @@ def main() -> None:
                     kind=args.kind,
                     content=args.content,
                     metadata=json.loads(args.metadata),
-                )
+                ),
+                principal=principal,
             ).model_dump()
         )
         return
@@ -196,6 +220,7 @@ def main() -> None:
                     agent_id=args.agent_id,
                     limit=args.limit,
                     after=args.after,
+                    principal=principal,
                 )
             ]
         )
@@ -212,13 +237,14 @@ def main() -> None:
                     kind=args.kind,
                     uri=args.uri,
                     summary=args.summary,
-                )
+                ),
+                principal=principal,
             ).model_dump()
         )
         return
 
     if args.command == "timeline":
-        emit([item.model_dump() for item in service.timeline(args.workspace, args.limit)])
+        emit([item.model_dump() for item in service.timeline(args.workspace, args.limit, principal=principal)])
         return
 
     parser.error(f"Unsupported command: {args.command}")

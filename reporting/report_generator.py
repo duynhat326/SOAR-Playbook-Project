@@ -1,53 +1,45 @@
-"""
-reporting/report_generator.py
-==============================
-Incident Report Generator — sinh báo cáo chuyên nghiệp cho mỗi alert.
+from __future__ import annotations
 
-Output formats:
-  1. Markdown  (.md)  — luôn sinh, dùng để review trong terminal/GitHub
-  2. HTML      (.html) — dùng markdown2 + CSS, đẹp để open trong browser
-  3. PDF       (.pdf)  — dùng weasyprint (HTML→PDF), optional
-
-Report sections (theo spec mục 6):
-  - Executive Summary
-  - Alert & Detection Details
-  - Timeline xử lý (7 bước)
-  - IOC Summary (hash, IP, process, file path)
-  - Enrichment Results (hash/IP/asset/MITRE)
-  - Risk Assessment với breakdown
-  - Response Actions đã thực hiện
-  - Recommendations
-"""
-
-import textwrap
+import html
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from loguru import logger
 
-from schemas.alert import (
-    AssetCriticality,
-    HashReputation,
-    IPReputation,
-    IncidentResponse,
-    ResponseAction,
-)
+from schemas.alert import IncidentResponse, ResponseAction
 
-# Thư mục output mặc định
 _DEFAULT_OUTPUT_DIR = Path("output") / "reports"
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _format_utc(dt: Optional[datetime], pattern: str = "%Y-%m-%d %H:%M:%S UTC") -> str:
+    if dt is None:
+        return "-"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime(pattern)
+
+
+def _safe_text(value: object) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _safe_inline(value: object) -> str:
+    return _safe_text(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def _safe_code(value: object) -> str:
+    return _safe_text(value).replace("\r", "")
+
+
 class ReportGenerator:
-    """
-    Sinh incident report đầy đủ từ IncidentResponse.
+    """Generate Markdown, HTML, and optional PDF incident reports."""
 
-    Sử dụng:
-        generator = ReportGenerator()
-        md_path, html_path, pdf_path = generator.generate(response)
-    """
-
-    def __init__(self, output_dir: Optional[Path] = None):
+    def __init__(self, output_dir: Optional[Path] = None) -> None:
         self._output_dir = output_dir or _DEFAULT_OUTPUT_DIR
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -56,469 +48,433 @@ class ReportGenerator:
         response: IncidentResponse,
         export_pdf: bool = True,
     ) -> tuple[Path, Path, Optional[Path]]:
-        """
-        Sinh đầy đủ report cho 1 incident.
-
-        Args:
-            response   : IncidentResponse từ policy engine
-            export_pdf : Có thử export PDF không (cần weasyprint)
-
-        Returns:
-            Tuple (md_path, html_path, pdf_path or None)
-        """
         alert = response.enriched_alert.original_alert
-        safe_id = alert.alert_id.replace("-", "")[:16]
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        base_name = f"incident_{safe_id}_{ts}"
+        safe_id = "".join(ch for ch in alert.alert_id if ch.isalnum())[:16] or "incident"
+        timestamp = _utc_now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"incident_{safe_id}_{timestamp}"
 
         logger.info(f"[Report] Generating report for alert {alert.alert_id[:8]}...")
 
-        # ── 1. Sinh Markdown ──────────────────────────────────────────
-        md_content = self._build_markdown(response)
-        md_path = self._output_dir / f"{base_name}.md"
-        md_path.write_text(md_content, encoding="utf-8")
-        logger.success(f"[Report] Markdown saved: {md_path}")
+        markdown_content = self._build_markdown(response)
+        markdown_path = self._output_dir / f"{base_name}.md"
+        markdown_path.write_text(markdown_content, encoding="utf-8")
+        logger.success(f"[Report] Markdown saved: {markdown_path}")
 
-        # ── 2. Sinh HTML ──────────────────────────────────────────────
-        html_content = self._build_html(md_content, response)
+        html_content = self._build_html(markdown_content, response)
         html_path = self._output_dir / f"{base_name}.html"
         html_path.write_text(html_content, encoding="utf-8")
         logger.success(f"[Report] HTML saved: {html_path}")
 
-        # ── 3. Export PDF (optional) ──────────────────────────────────
         pdf_path: Optional[Path] = None
         if export_pdf:
             pdf_path = self._export_pdf(html_content, self._output_dir / f"{base_name}.pdf")
 
-        return md_path, html_path, pdf_path
-
-    # ──────────────────────────────────────────────────────────────────
-    # Markdown builder
-    # ──────────────────────────────────────────────────────────────────
+        return markdown_path, html_path, pdf_path
 
     def _build_markdown(self, response: IncidentResponse) -> str:
-        """Sinh nội dung Markdown đầy đủ từ IncidentResponse."""
         enriched = response.enriched_alert
-        alert    = enriched.original_alert
-        now_str  = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        alert = enriched.original_alert
+        risk_level = enriched.risk_level.upper()
+        ticket_id = _safe_inline(response.ticket_id or "N/A")
+        generated_at = _format_utc(_utc_now())
 
-        risk_level  = enriched.risk_level.upper()
-        risk_score  = enriched.risk_score
-        ticket_id   = response.ticket_id or "N/A"
-
-        # Emoji badges
         severity_badge = {
-            "low": "🟢 LOW", "medium": "🟡 MEDIUM",
-            "high": "🔴 HIGH", "critical": "🔴🔴 CRITICAL"
-        }.get(enriched.risk_level, enriched.risk_level.upper())
+            "low": "LOW",
+            "medium": "MEDIUM",
+            "high": "HIGH",
+            "critical": "CRITICAL",
+        }.get(enriched.risk_level, risk_level)
 
-        sections = []
-
-        # ── Header ────────────────────────────────────────────────────
-        sections.append(f"""\
-# 🛡️ Incident Report — Malware Alert on Endpoint
-
-| Field | Value |
-|-------|-------|
-| **Report Generated** | {now_str} |
-| **Alert ID** | `{alert.alert_id}` |
-| **Ticket ID** | `{ticket_id}` |
-| **Risk Level** | **{severity_badge}** |
-| **Risk Score** | **{risk_score:.1f} / 100** |
-| **Detection** | {alert.detection_name} |
-| **Analyst** | SOAR Automated Response |
-
----
-""")
-
-        # ── 1. Executive Summary ──────────────────────────────────────
-        actions_taken = [
-            a.value for a in response.triggered_actions
-            if a not in (ResponseAction.CREATE_TICKET, ResponseAction.NOTIFY_SOC)
+        sections = [
+            "\n".join(
+                [
+                    "# Incident Report - Malware Alert on Endpoint",
+                    "",
+                    "| Field | Value |",
+                    "|-------|-------|",
+                    f"| **Report Generated** | {generated_at} |",
+                    f"| **Alert ID** | `{_safe_inline(alert.alert_id)}` |",
+                    f"| **Ticket ID** | `{ticket_id}` |",
+                    f"| **Risk Level** | **{severity_badge}** |",
+                    f"| **Risk Score** | **{enriched.risk_score:.1f} / 100** |",
+                    f"| **Detection** | {_safe_inline(alert.detection_name)} |",
+                    "| **Analyst** | SOAR Automated Response |",
+                    "",
+                    "---",
+                    "",
+                    "## 1. Executive Summary",
+                    "",
+                    self._generate_executive_summary(response),
+                    "",
+                    "---",
+                    "",
+                    "## 2. Alert Details",
+                    "",
+                    "| Field | Value |",
+                    "|-------|-------|",
+                    f"| **Alert ID** | `{_safe_inline(alert.alert_id)}` |",
+                    f"| **Received At** | {_format_utc(alert.received_at)} |",
+                    f"| **Hostname** | `{_safe_inline(alert.hostname)}` |",
+                    f"| **Username** | `{_safe_inline(alert.username)}` |",
+                    f"| **Process Name** | `{_safe_inline(alert.process_name)}` |",
+                    f"| **Parent Process** | `{_safe_inline(alert.parent_process)}` |",
+                    f"| **File Path** | `{_safe_inline(alert.file_path)}` |",
+                    f"| **Detection Name** | {_safe_inline(alert.detection_name)} |",
+                    f"| **EDR Severity** | {_safe_inline(alert.severity.value.upper())} |",
+                    "",
+                    "**Command Line:**",
+                    "```text",
+                    _safe_code(alert.command_line),
+                    "```",
+                    "",
+                    "---",
+                    "",
+                    self._build_timeline_section(response),
+                    self._build_ioc_section(response),
+                    self._build_enrichment_section(response),
+                    self._build_risk_section(response),
+                    self._build_actions_section(response),
+                    self._build_recommendations_section(response),
+                    "---",
+                    "",
+                    "*Report generated automatically by SOAR Malware Playbook v2.0*",
+                    f"*Ticket: `{ticket_id}` | Alert ID: `{_safe_inline(alert.alert_id)}`*",
+                    f"*{generated_at}*",
+                    "",
+                ]
+            )
         ]
-        actions_str = ", ".join(f"`{a}`" for a in actions_taken) if actions_taken else "`no_action`"
-
-        hash_rep  = enriched.hash_enrichment.reputation.value if enriched.hash_enrichment else "unknown"
-        ip_is_c2  = enriched.ip_enrichment.is_c2 if enriched.ip_enrichment else False
-        asset_crit = enriched.asset_criticality.value
-
-        summary = self._generate_executive_summary(
-            alert, enriched.risk_level, risk_score, hash_rep, ip_is_c2,
-            asset_crit, actions_taken
-        )
-        sections.append(f"""\
-## 1. Executive Summary
-
-{summary}
-
----
-""")
-
-        # ── 2. Alert Details ──────────────────────────────────────────
-        sections.append(f"""\
-## 2. Alert Details
-
-| Field | Value |
-|-------|-------|
-| **Alert ID** | `{alert.alert_id}` |
-| **Received At** | {alert.received_at.strftime('%Y-%m-%d %H:%M:%S UTC')} |
-| **Hostname** | `{alert.hostname}` |
-| **Username** | `{alert.username}` |
-| **Process Name** | `{alert.process_name}` |
-| **Parent Process** | `{alert.parent_process}` |
-| **File Path** | `{alert.file_path}` |
-| **Detection Name** | {alert.detection_name} |
-| **EDR Severity** | {alert.severity.value.upper()} |
-
-**Command Line:**
-```
-{alert.command_line}
-```
-
----
-""")
-
-        # ── 3. Timeline ───────────────────────────────────────────────
-        sections.append(self._build_timeline_section(response))
-
-        # ── 4. IOC Summary ────────────────────────────────────────────
-        hash_threat = (
-            enriched.hash_enrichment.threat_name
-            if enriched.hash_enrichment and enriched.hash_enrichment.threat_name
-            else "N/A"
-        )
-        ip_country = (
-            enriched.ip_enrichment.country
-            if enriched.ip_enrichment else "N/A"
-        )
-        sections.append(f"""\
-## 4. IOC Summary
-
-| IOC Type | Value | Reputation |
-|----------|-------|------------|
-| **File Hash (SHA256)** | `{alert.file_hash}` | {hash_rep.upper()} |
-| **Threat Name** | {hash_threat} | — |
-| **Destination IP** | `{alert.destination_ip}` | {'⚠️ C2 SERVER' if ip_is_c2 else enriched.ip_enrichment.reputation.value.upper() if enriched.ip_enrichment else 'UNKNOWN'} |
-| **IP Country** | {ip_country} | — |
-| **Process Name** | `{alert.process_name}` | {'⚠️ DANGEROUS' if self._is_dangerous_name(alert.process_name) else 'Normal'} |
-| **File Path** | `{alert.file_path}` | — |
-| **Parent Process** | `{alert.parent_process}` | — |
-
----
-""")
-
-        # ── 5. Enrichment Results ─────────────────────────────────────
-        sections.append(self._build_enrichment_section(enriched))
-
-        # ── 6. Risk Assessment ────────────────────────────────────────
-        sections.append(f"""\
-## 6. Risk Assessment
-
-### Overall Risk Score: **{risk_score:.1f}/100** — {risk_level}
-
-| Component | Raw Score | Weight | Contribution |
-|-----------|-----------|--------|-------------|
-| Hash Reputation | {enriched.hash_enrichment.reputation.value.upper() if enriched.hash_enrichment else 'N/A'} | 30% | — |
-| IP Reputation | {'C2 DETECTED' if ip_is_c2 else enriched.ip_enrichment.reputation.value.upper() if enriched.ip_enrichment else 'N/A'} | 25% | — |
-| Asset Criticality | {asset_crit.upper()} | 20% | — |
-| Alert Severity | {alert.severity.value.upper()} | 15% | — |
-| MITRE Techniques | {len(enriched.mitre_mappings)} matched | 10% | — |
-
-### Scoring Reasoning:
-""" + "\n".join(f"- {r}" for r in (response.policy_reasoning if hasattr(response, 'policy_reasoning') else [])) + "\n\n---\n")
-
-        # ── 7. Response Actions ───────────────────────────────────────
-        sections.append(self._build_actions_section(response))
-
-        # ── 8. Recommendations ───────────────────────────────────────
-        sections.append(self._build_recommendations_section(
-            enriched, actions_taken
-        ))
-
-        # ── Footer ────────────────────────────────────────────────────
-        sections.append(f"""\
----
-
-*Report generated automatically by SOAR Malware Playbook v1.0*
-*Ticket: `{ticket_id}` | Alert ID: `{alert.alert_id}`*
-*{now_str}*
-""")
-
         return "\n".join(sections)
 
     def _build_timeline_section(self, response: IncidentResponse) -> str:
-        """Sinh section Timeline 7 bước."""
         enriched = response.enriched_alert
-        alert    = enriched.original_alert
-        t0       = alert.received_at
-
-        def fmt_time(dt: datetime) -> str:
-            return dt.strftime("%H:%M:%S UTC") if dt else "—"
-
-        completed = response.completed_at
-
+        alert = enriched.original_alert
+        completed_at = response.completed_at
         lines = [
-            "## 3. Processing Timeline\n",
+            "## 3. Processing Timeline",
+            "",
             "| Step | Description | Time | Status |",
             "|------|-------------|------|--------|",
-            f"| **Step 1** | Alert Received from EDR | {fmt_time(t0)} | ✅ Done |",
-            f"| **Step 2** | Hash Enrichment (mock VirusTotal) | {fmt_time(t0)} | ✅ Done |",
-            f"| **Step 3** | IP Enrichment (mock AbuseIPDB) | {fmt_time(t0)} | ✅ Done |",
-            f"| **Step 4** | Asset Criticality Lookup (mock CMDB) | {fmt_time(t0)} | ✅ Done |",
-            f"| **Step 5** | MITRE ATT&CK Mapping | {fmt_time(t0)} | ✅ Done ({len(enriched.mitre_mappings)} techniques) |",
-            f"| **Step 6** | Risk Score Calculation | {fmt_time(t0)} | ✅ Done ({enriched.risk_score:.1f}/100) |",
-            f"| **Step 7** | Policy Engine + Actions | {fmt_time(completed)} | ✅ Done |",
+            f"| **Step 1** | Alert received from EDR | {_format_utc(alert.received_at, '%H:%M:%S UTC')} | Done |",
+            f"| **Step 2** | Hash enrichment | {_format_utc(alert.received_at, '%H:%M:%S UTC')} | Done |",
+            f"| **Step 3** | IP enrichment | {_format_utc(alert.received_at, '%H:%M:%S UTC')} | Done |",
+            f"| **Step 4** | Asset criticality lookup | {_format_utc(alert.received_at, '%H:%M:%S UTC')} | Done |",
+            f"| **Step 5** | MITRE ATT&CK mapping | {_format_utc(alert.received_at, '%H:%M:%S UTC')} | Done ({len(enriched.mitre_mappings)} techniques) |",
+            f"| **Step 6** | Risk score calculation | {_format_utc(alert.received_at, '%H:%M:%S UTC')} | Done ({enriched.risk_score:.1f}/100) |",
+            f"| **Step 7** | Policy evaluation and actions | {_format_utc(completed_at, '%H:%M:%S UTC')} | Done |",
             "",
-            f"> **Total Processing Time:** < 1 second (mock pipeline)",
+            "> Total processing time: mock pipeline, typically under one second.",
             "",
             "---",
             "",
         ]
         return "\n".join(lines)
 
-    def _build_enrichment_section(self, enriched) -> str:
-        """Sinh section Enrichment Results."""
+    def _build_ioc_section(self, response: IncidentResponse) -> str:
+        enriched = response.enriched_alert
         alert = enriched.original_alert
-        lines = ["## 5. Enrichment Results\n"]
-
-        # Hash enrichment
-        if enriched.hash_enrichment:
-            h = enriched.hash_enrichment
-            status_icon = {"malicious": "🔴", "suspicious": "🟡", "clean": "🟢"}.get(
-                h.reputation.value, "⚪"
-            )
-            lines += [
-                "### 5.1 Hash Analysis (VirusTotal-like)\n",
-                f"| Field | Value |",
-                f"|-------|-------|",
-                f"| Hash  | `{alert.file_hash}` |",
-                f"| Reputation | {status_icon} **{h.reputation.value.upper()}** |",
-                f"| Detection Rate | {h.malicious_vendors}/{h.total_vendors} vendors |",
-                f"| Threat Name | {h.threat_name or 'N/A'} |",
-                f"| Source | {h.source} |",
-                "",
-            ]
-
-        # IP enrichment
-        if enriched.ip_enrichment:
-            ip = enriched.ip_enrichment
-            c2_badge = " 🚨 **[C2 SERVER]**" if ip.is_c2 else ""
-            status_icon = {"malicious": "🔴", "clean": "🟢"}.get(ip.reputation.value, "⚪")
-            lines += [
-                "### 5.2 IP Analysis (AbuseIPDB-like)\n",
-                f"| Field | Value |",
-                f"|-------|-------|",
-                f"| IP Address | `{alert.destination_ip}`{c2_badge} |",
-                f"| Reputation | {status_icon} **{ip.reputation.value.upper()}** |",
-                f"| Confidence Score | {ip.confidence_score}/100 |",
-                f"| Is C2 Server | {'⚠️ YES' if ip.is_c2 else 'No'} |",
-                f"| Country | {ip.country or 'Unknown'} |",
-                f"| ISP | {ip.isp or 'Unknown'} |",
-                f"| Source | {ip.source} |",
-                "",
-            ]
-
-        # Asset criticality
-        crit_icon = {"critical": "🔴", "normal": "🟡", "low": "🟢"}.get(
-            enriched.asset_criticality.value, "⚪"
+        hash_rep = enriched.hash_enrichment.reputation.value.upper() if enriched.hash_enrichment else "UNKNOWN"
+        hash_threat = (
+            enriched.hash_enrichment.threat_name if enriched.hash_enrichment and enriched.hash_enrichment.threat_name else "N/A"
         )
-        lines += [
-            "### 5.3 Asset Criticality (CMDB)\n",
-            f"| Field | Value |",
-            f"|-------|-------|",
-            f"| Hostname | `{alert.hostname}` |",
-            f"| Criticality | {crit_icon} **{enriched.asset_criticality.value.upper()}** |",
+        ip_rep = (
+            "C2 SERVER"
+            if enriched.ip_enrichment and enriched.ip_enrichment.is_c2
+            else enriched.ip_enrichment.reputation.value.upper()
+            if enriched.ip_enrichment
+            else "UNKNOWN"
+        )
+        ip_country = enriched.ip_enrichment.country if enriched.ip_enrichment and enriched.ip_enrichment.country else "N/A"
+        process_reputation = "DANGEROUS" if self._is_dangerous_name(alert.process_name) else "Normal"
+        lines = [
+            "## 4. IOC Summary",
+            "",
+            "| IOC Type | Value | Reputation |",
+            "|----------|-------|------------|",
+            f"| **File Hash (SHA256)** | `{_safe_inline(alert.file_hash)}` | {_safe_inline(hash_rep)} |",
+            f"| **Threat Name** | {_safe_inline(hash_threat)} | - |",
+            f"| **Destination IP** | `{_safe_inline(alert.destination_ip)}` | {_safe_inline(ip_rep)} |",
+            f"| **IP Country** | {_safe_inline(ip_country)} | - |",
+            f"| **Process Name** | `{_safe_inline(alert.process_name)}` | {_safe_inline(process_reputation)} |",
+            f"| **File Path** | `{_safe_inline(alert.file_path)}` | - |",
+            f"| **Parent Process** | `{_safe_inline(alert.parent_process)}` | - |",
+            "",
+            "---",
             "",
         ]
+        return "\n".join(lines)
 
-        # MITRE mappings
-        lines += ["### 5.4 MITRE ATT&CK Mapping\n"]
-        if enriched.mitre_mappings:
-            lines += [
-                "| Technique ID | Technique Name | Tactic | Confidence | Matched Pattern |",
-                "|-------------|---------------|--------|-----------|----------------|",
+    def _build_enrichment_section(self, response: IncidentResponse) -> str:
+        enriched = response.enriched_alert
+        alert = enriched.original_alert
+        lines = ["## 5. Enrichment Results", ""]
+
+        if enriched.hash_enrichment:
+            hash_enrichment = enriched.hash_enrichment
+            lines.extend(
+                [
+                    "### 5.1 Hash Analysis",
+                    "",
+                    "| Field | Value |",
+                    "|-------|-------|",
+                    f"| Hash | `{_safe_inline(alert.file_hash)}` |",
+                    f"| Reputation | **{_safe_inline(hash_enrichment.reputation.value.upper())}** |",
+                    f"| Detection Rate | {hash_enrichment.malicious_vendors}/{hash_enrichment.total_vendors} vendors |",
+                    f"| Threat Name | {_safe_inline(hash_enrichment.threat_name or 'N/A')} |",
+                    f"| Source | {_safe_inline(hash_enrichment.source)} |",
+                    "",
+                ]
+            )
+
+        if enriched.ip_enrichment:
+            ip_enrichment = enriched.ip_enrichment
+            lines.extend(
+                [
+                    "### 5.2 IP Analysis",
+                    "",
+                    "| Field | Value |",
+                    "|-------|-------|",
+                    f"| IP Address | `{_safe_inline(alert.destination_ip)}` |",
+                    f"| Reputation | **{_safe_inline(ip_enrichment.reputation.value.upper())}** |",
+                    f"| Confidence Score | {ip_enrichment.confidence_score}/100 |",
+                    f"| Is C2 Server | {'YES' if ip_enrichment.is_c2 else 'No'} |",
+                    f"| Country | {_safe_inline(ip_enrichment.country or 'Unknown')} |",
+                    f"| ISP | {_safe_inline(ip_enrichment.isp or 'Unknown')} |",
+                    f"| Source | {_safe_inline(ip_enrichment.source)} |",
+                    "",
+                ]
+            )
+
+        lines.extend(
+            [
+                "### 5.3 Asset Criticality",
+                "",
+                "| Field | Value |",
+                "|-------|-------|",
+                f"| Hostname | `{_safe_inline(alert.hostname)}` |",
+                f"| Criticality | **{_safe_inline(enriched.asset_criticality.value.upper())}** |",
+                "",
+                "### 5.4 MITRE ATT&CK Mapping",
+                "",
             ]
-            for m in enriched.mitre_mappings:
+        )
+
+        if enriched.mitre_mappings:
+            lines.extend(
+                [
+                    "| Technique ID | Technique Name | Tactic | Confidence | Matched Pattern |",
+                    "|-------------|---------------|--------|-----------|----------------|",
+                ]
+            )
+            for mapping in enriched.mitre_mappings:
+                technique_id = _safe_inline(mapping.technique_id)
+                technique_path = mapping.technique_id.replace(".", "/")
                 lines.append(
-                    f"| [{m.technique_id}](https://attack.mitre.org/techniques/"
-                    f"{m.technique_id.replace('.', '/')}) "
-                    f"| {m.technique_name} | {m.tactic} "
-                    f"| {m.confidence:.0%} | `{m.matched_pattern}` |"
+                    f"| [{technique_id}](https://attack.mitre.org/techniques/{technique_path}) | "
+                    f"{_safe_inline(mapping.technique_name)} | {_safe_inline(mapping.tactic)} | "
+                    f"{mapping.confidence:.0%} | `{_safe_inline(mapping.matched_pattern)}` |"
                 )
             lines.append("")
         else:
-            lines += ["*No MITRE ATT&CK techniques matched for this alert.*\n"]
+            lines.extend(["*No MITRE ATT&CK techniques matched for this alert.*", ""])
 
-        lines.append("---\n")
+        lines.extend(["---", ""])
+        return "\n".join(lines)
+
+    def _build_risk_section(self, response: IncidentResponse) -> str:
+        enriched = response.enriched_alert
+        alert = enriched.original_alert
+        ip_rep = (
+            "C2 DETECTED"
+            if enriched.ip_enrichment and enriched.ip_enrichment.is_c2
+            else enriched.ip_enrichment.reputation.value.upper()
+            if enriched.ip_enrichment
+            else "N/A"
+        )
+        hash_rep = (
+            enriched.hash_enrichment.reputation.value.upper()
+            if enriched.hash_enrichment
+            else "N/A"
+        )
+        reasoning = response.policy_reasoning or ["No policy reasoning captured."]
+        lines = [
+            "## 6. Risk Assessment",
+            "",
+            f"### Overall Risk Score: **{enriched.risk_score:.1f}/100** - {_safe_inline(enriched.risk_level.upper())}",
+            "",
+            "| Component | Raw Score | Weight | Contribution |",
+            "|-----------|-----------|--------|-------------|",
+            f"| Hash Reputation | {_safe_inline(hash_rep)} | 30% | - |",
+            f"| IP Reputation | {_safe_inline(ip_rep)} | 25% | - |",
+            f"| Asset Criticality | {_safe_inline(enriched.asset_criticality.value.upper())} | 20% | - |",
+            f"| Alert Severity | {_safe_inline(alert.severity.value.upper())} | 15% | - |",
+            f"| MITRE Techniques | {len(enriched.mitre_mappings)} matched | 10% | - |",
+            "",
+            "### Scoring Reasoning",
+            "",
+        ]
+        lines.extend(f"- {_safe_inline(item)}" for item in reasoning)
+        lines.extend(["", "---", ""])
         return "\n".join(lines)
 
     def _build_actions_section(self, response: IncidentResponse) -> str:
-        """Sinh section Response Actions."""
-        lines = ["## 7. Response Actions Taken\n"]
+        lines = ["## 7. Response Actions Taken", ""]
+        action_results = [item for item in response.action_results if item.action != ResponseAction.NOTIFY_SOC]
 
-        main_actions = [
-            r for r in response.action_results
-            if r.action not in (ResponseAction.NOTIFY_SOC,)
-        ]
-
-        if not main_actions:
-            lines.append("*No automated actions were taken for this alert.*\n")
-        else:
-            lines += [
-                "| Action | Status | Time | Details |",
-                "|--------|--------|------|---------|",
-            ]
-            for result in main_actions:
-                status_icon = "✅" if result.status == "success" else "❌"
-                time_str = result.executed_at.strftime("%H:%M:%S UTC")
-                # Truncate details for table
-                details_short = result.details[:80] + "..." if len(result.details) > 80 else result.details
+        if action_results:
+            lines.extend(
+                [
+                    "| Action | Status | Time | Details |",
+                    "|--------|--------|------|---------|",
+                ]
+            )
+            for result in action_results:
+                details = result.details
+                if len(details) > 120:
+                    details = f"{details[:117]}..."
                 lines.append(
-                    f"| `{result.action.value}` | {status_icon} {result.status} "
-                    f"| {time_str} | {details_short} |"
+                    f"| `{_safe_inline(result.action.value)}` | {_safe_inline(result.status)} | "
+                    f"{_format_utc(result.executed_at, '%H:%M:%S UTC')} | {_safe_inline(details)} |"
                 )
             lines.append("")
+        else:
+            lines.extend(["*No automated actions were taken for this alert.*", ""])
 
-        # Policy reasoning
-        lines += [
-            "### Policy Engine Reasoning\n",
-        ]
-        for r in response.policy_reasoning:
-            icon = "🔴" if "TRIGGERED" in r else "🟢" if "PASS" in r else "⚪"
-            lines.append(f"- {icon} {r}")
-
-        lines += ["", f"**Ticket Created:** `{response.ticket_id or 'N/A'}`", "", "---", ""]
+        lines.append("### Policy Engine Reasoning")
+        lines.append("")
+        if response.policy_reasoning:
+            lines.extend(f"- {_safe_inline(item)}" for item in response.policy_reasoning)
+        else:
+            lines.append("- No policy reasoning captured.")
+        lines.extend(
+            [
+                "",
+                f"**Ticket Created:** `{_safe_inline(response.ticket_id or 'N/A')}`",
+                "",
+                "---",
+                "",
+            ]
+        )
         return "\n".join(lines)
 
-    def _build_recommendations_section(self, enriched, actions_taken: list) -> str:
-        """Sinh recommendations dựa trên kết quả enrichment + actions."""
+    def _build_recommendations_section(self, response: IncidentResponse) -> str:
+        enriched = response.enriched_alert
         alert = enriched.original_alert
-        recs  = []
+        actions_taken = {item.value for item in response.triggered_actions}
+        recommendations: list[str] = []
 
-        # Recommendations dựa trên actions đã thực hiện
         if ResponseAction.ISOLATE_HOST.value in actions_taken:
-            recs += [
-                "**[Immediate]** Host đã bị isolate. Tiến hành forensic investigation "
-                "trước khi restore network access.",
-                "**[Immediate]** Thu thập memory dump và disk image từ host bị compromise.",
-                "**[Short-term]** Reset credentials của user `{}` và tất cả shared accounts.".format(
-                    alert.username
-                ),
-            ]
-
+            recommendations.extend(
+                [
+                    "Immediate: investigate the isolated host before restoring network access.",
+                    "Immediate: capture memory and disk evidence from the affected endpoint.",
+                    f"Short-term: rotate credentials associated with `{_safe_inline(alert.username)}`.",
+                ]
+            )
         if ResponseAction.KILL_PROCESS.value in actions_taken:
-            recs += [
-                f"**[Immediate]** Kiểm tra xem process `{alert.process_name}` đã spawn child processes nào chưa.",
-                "**[Short-term]** Review audit logs để tìm lateral movement từ thời điểm process khởi chạy.",
-            ]
-
+            recommendations.extend(
+                [
+                    f"Immediate: inspect child processes spawned by `{_safe_inline(alert.process_name)}`.",
+                    "Short-term: review process creation telemetry around the alert timestamp.",
+                ]
+            )
         if ResponseAction.BLOCK_IP.value in actions_taken:
-            recs += [
-                f"**[Immediate]** Kiểm tra tất cả hosts khác có kết nối tới IP `{alert.destination_ip}` không.",
-                "**[Short-term]** Review network flow logs 24h trước thời điểm alert.",
-                "**[Long-term]** Thêm IP này vào threat intel feed nội bộ.",
-            ]
-
+            recommendations.extend(
+                [
+                    f"Immediate: search for additional hosts communicating with `{_safe_inline(alert.destination_ip)}`.",
+                    "Short-term: review network flow logs for the last 24 hours.",
+                ]
+            )
         if ResponseAction.ESCALATE.value in actions_taken:
-            recs += [
-                f"**[Immediate]** Host `{alert.hostname}` là critical asset — escalate lên SOC Lead ngay.",
-                "**[Immediate]** Thông báo cho business owner và management về potential breach.",
-            ]
+            recommendations.extend(
+                [
+                    f"Immediate: escalate host `{_safe_inline(alert.hostname)}` to the SOC lead.",
+                    "Immediate: notify the asset owner and incident commander.",
+                ]
+            )
 
-        # General recommendations
-        recs += [
-            "**[Short-term]** Review EDR detection rules để giảm false positive rate.",
-            "**[Short-term]** Kiểm tra patch level của host bị ảnh hưởng.",
-            "**[Long-term]** Update SOAR playbook nếu phát hiện gap trong response.",
-            "**[Long-term]** Conduct tabletop exercise để validate incident response procedure.",
-        ]
+        recommendations.extend(
+            [
+                "Short-term: review EDR detections for tuning opportunities and false positives.",
+                "Short-term: verify patch and hardening status on the affected endpoint.",
+                "Long-term: update playbooks if this incident exposed automation gaps.",
+                "Long-term: run a tabletop exercise for this attack path.",
+            ]
+        )
 
         if enriched.mitre_mappings:
-            tactics = list({m.tactic for m in enriched.mitre_mappings})
-            recs.append(
-                f"**[Long-term]** Review defensive controls cho MITRE tactics: "
-                f"{', '.join(tactics)}."
+            tactics = sorted({mapping.tactic for mapping in enriched.mitre_mappings})
+            recommendations.append(
+                f"Long-term: review defensive coverage for MITRE tactics {', '.join(_safe_inline(tactic) for tactic in tactics)}."
             )
 
-        lines = ["## 8. Recommendations\n"]
-        for i, rec in enumerate(recs, 1):
-            lines.append(f"{i}. {rec}")
-        lines += ["", "---", ""]
+        lines = ["## 8. Recommendations", ""]
+        for index, item in enumerate(recommendations, start=1):
+            lines.append(f"{index}. {item}")
+        lines.extend(["", "---", ""])
         return "\n".join(lines)
 
-    # ──────────────────────────────────────────────────────────────────
-    # HTML builder (với CSS styling)
-    # ──────────────────────────────────────────────────────────────────
-
-    def _build_html(self, md_content: str, response: IncidentResponse) -> str:
-        """Convert Markdown → styled HTML."""
+    def _build_html(self, markdown_content: str, response: IncidentResponse) -> str:
         try:
             import markdown2
+
             body_html = markdown2.markdown(
-                md_content,
-                extras=["tables", "fenced-code-blocks", "header-ids", "break-on-newline"]
+                markdown_content,
+                extras=["tables", "fenced-code-blocks", "header-ids", "break-on-newline"],
             )
         except ImportError:
-            # Fallback: wrap markdown in <pre> nếu markdown2 chưa cài
-            body_html = f"<pre>{md_content}</pre>"
+            body_html = f"<pre>{html.escape(markdown_content, quote=True)}</pre>"
 
-        alert   = response.enriched_alert.original_alert
-        level   = response.enriched_alert.risk_level
-        score   = response.enriched_alert.risk_score
-        ticket  = response.ticket_id or "N/A"
-
-        # Color scheme theo risk level
+        alert = response.enriched_alert.original_alert
+        level = _safe_text(response.enriched_alert.risk_level.upper())
+        score = response.enriched_alert.risk_score
         accent = {
-            "critical": "#dc2626", "high": "#ea580c",
-            "medium": "#d97706", "low": "#16a34a"
-        }.get(level, "#6b7280")
+            "critical": "#dc2626",
+            "high": "#ea580c",
+            "medium": "#d97706",
+            "low": "#16a34a",
+        }.get(response.enriched_alert.risk_level, "#6b7280")
 
         return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Incident Report — {alert.alert_id[:8]} — {level.upper()}</title>
+  <title>Incident Report - {_safe_text(alert.alert_id[:8])} - {level}</title>
   <style>
-    /* ── Reset & Base ── */
-    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    * {{ box-sizing: border-box; }}
     body {{
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      margin: 0;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
       font-size: 14px;
       line-height: 1.6;
       color: #1e293b;
       background: #f8fafc;
       padding: 24px;
     }}
-
-    /* ── Page wrapper ── */
     .page {{
       max-width: 960px;
       margin: 0 auto;
       background: #ffffff;
       border-radius: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
       overflow: hidden;
     }}
-
-    /* ── Header banner ── */
     .header-banner {{
       background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
-      color: white;
+      color: #ffffff;
       padding: 32px 40px;
       border-bottom: 4px solid {accent};
     }}
     .header-banner h1 {{
+      margin: 0 0 8px;
       font-size: 22px;
       font-weight: 700;
-      margin-bottom: 8px;
-      color: white;
-      border: none;
     }}
     .badge {{
       display: inline-block;
       background: {accent};
-      color: white;
+      color: #ffffff;
       font-size: 13px;
       font-weight: 700;
       padding: 4px 14px;
@@ -531,64 +487,47 @@ class ReportGenerator:
       gap: 12px;
       margin-top: 20px;
     }}
-    .meta-item {{ color: rgba(255,255,255,0.85); font-size: 13px; }}
-    .meta-item strong {{ color: white; display: block; font-size: 11px;
-      text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.7; margin-bottom: 2px; }}
-
-    /* ── Content body ── */
-    .content {{ padding: 40px; }}
-
-    /* ── Typography ── */
-    h1, h2, h3, h4 {{
-      color: #0f172a;
-      font-weight: 700;
-      line-height: 1.3;
+    .meta-item {{
+      color: rgba(255, 255, 255, 0.88);
+      font-size: 13px;
     }}
+    .meta-item strong {{
+      display: block;
+      margin-bottom: 2px;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      opacity: 0.75;
+      text-transform: uppercase;
+    }}
+    .content {{ padding: 40px; }}
+    h1, h2, h3, h4 {{ color: #0f172a; line-height: 1.3; }}
     h2 {{
-      font-size: 18px;
-      margin: 36px 0 16px;
+      margin-top: 36px;
       padding-bottom: 8px;
       border-bottom: 2px solid {accent};
-      color: #0f172a;
     }}
-    h3 {{
-      font-size: 15px;
-      margin: 24px 0 12px;
-      color: #334155;
-    }}
-    p {{ margin-bottom: 12px; color: #374151; }}
-
-    /* ── Tables ── */
+    h3 {{ margin-top: 24px; color: #334155; }}
     table {{
       width: 100%;
       border-collapse: collapse;
       margin: 16px 0;
       font-size: 13px;
-      border-radius: 8px;
-      overflow: hidden;
       border: 1px solid #e2e8f0;
     }}
-    thead tr {{ background: #0f172a; color: white; }}
-    thead th {{
-      padding: 10px 14px;
+    th, td {{
+      padding: 9px 14px;
+      border-bottom: 1px solid #e2e8f0;
       text-align: left;
-      font-weight: 600;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      vertical-align: top;
     }}
-    tbody tr {{ transition: background 0.15s; }}
-    tbody tr:nth-child(even) {{ background: #f8fafc; }}
-    tbody tr:hover {{ background: #f1f5f9; }}
-    td {{ padding: 9px 14px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }}
-
-    /* ── Code blocks ── */
+    thead tr, tbody tr:first-child th {{ background: #0f172a; color: #ffffff; }}
+    tr:nth-child(even) {{ background: #f8fafc; }}
     code {{
       background: #1e293b;
       color: #7dd3fc;
       padding: 2px 6px;
       border-radius: 4px;
-      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-family: "Cascadia Code", "Consolas", monospace;
       font-size: 12px;
     }}
     pre {{
@@ -597,32 +536,16 @@ class ReportGenerator:
       padding: 16px 20px;
       border-radius: 8px;
       overflow-x: auto;
-      margin: 12px 0;
       border-left: 4px solid {accent};
     }}
     pre code {{ background: none; color: inherit; padding: 0; }}
-
-    /* ── Blockquotes / callouts ── */
     blockquote {{
+      margin: 12px 0;
+      padding: 12px 16px;
       background: #f0f9ff;
       border-left: 4px solid #0ea5e9;
-      padding: 12px 16px;
-      margin: 12px 0;
-      border-radius: 0 6px 6px 0;
     }}
-    blockquote p {{ color: #0369a1; margin: 0; font-style: italic; }}
-
-    /* ── Lists ── */
-    ul, ol {{ padding-left: 24px; margin: 12px 0; }}
-    li {{ margin-bottom: 6px; color: #374151; }}
-
-    /* ── HR ── */
     hr {{ border: none; border-top: 1px solid #e2e8f0; margin: 32px 0; }}
-
-    /* ── Risk badge in content ── */
-    strong {{ color: #0f172a; }}
-
-    /* ── Footer ── */
     .footer {{
       background: #f8fafc;
       border-top: 1px solid #e2e8f0;
@@ -631,131 +554,89 @@ class ReportGenerator:
       color: #64748b;
       text-align: center;
     }}
-
-    /* ── Print styles ── */
     @media print {{
-      body {{ background: white; padding: 0; }}
+      body {{ background: #ffffff; padding: 0; }}
       .page {{ box-shadow: none; border-radius: 0; }}
     }}
   </style>
 </head>
 <body>
   <div class="page">
-    <!-- Header Banner -->
     <div class="header-banner">
-      <h1>🛡️ Incident Report — Malware Alert</h1>
-      <span class="badge">{level.upper()} RISK — {score:.1f}/100</span>
+      <h1>Incident Report - Malware Alert</h1>
+      <span class="badge">{level} RISK - {score:.1f}/100</span>
       <div class="meta-grid">
-        <div class="meta-item">
-          <strong>Alert ID</strong>
-          {alert.alert_id[:16]}...
-        </div>
-        <div class="meta-item">
-          <strong>Ticket</strong>
-          {ticket}
-        </div>
-        <div class="meta-item">
-          <strong>Hostname</strong>
-          {alert.hostname}
-        </div>
-        <div class="meta-item">
-          <strong>Detection</strong>
-          {alert.detection_name}
-        </div>
-        <div class="meta-item">
-          <strong>Generated</strong>
-          {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
-        </div>
+        <div class="meta-item"><strong>Alert ID</strong>{_safe_text(alert.alert_id)}</div>
+        <div class="meta-item"><strong>Ticket</strong>{_safe_text(response.ticket_id or "N/A")}</div>
+        <div class="meta-item"><strong>Hostname</strong>{_safe_text(alert.hostname)}</div>
+        <div class="meta-item"><strong>Detection</strong>{_safe_text(alert.detection_name)}</div>
+        <div class="meta-item"><strong>Generated</strong>{_safe_text(_format_utc(_utc_now(), '%Y-%m-%d %H:%M UTC'))}</div>
       </div>
     </div>
-
-    <!-- Main Content -->
     <div class="content">
       {body_html}
     </div>
-
-    <!-- Footer -->
     <div class="footer">
-      Generated by <strong>SOAR Malware Playbook v1.0</strong> —
-      Automated Incident Response System &nbsp;|&nbsp;
-      Ticket: <code>{ticket}</code> &nbsp;|&nbsp;
-      {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
+      Generated by <strong>SOAR Malware Playbook v2.0</strong>
+      &nbsp;|&nbsp; Ticket: <code>{_safe_text(response.ticket_id or "N/A")}</code>
+      &nbsp;|&nbsp; {_safe_text(_format_utc(_utc_now()))}
     </div>
   </div>
 </body>
 </html>
 """
 
-    # ──────────────────────────────────────────────────────────────────
-    # PDF export
-    # ──────────────────────────────────────────────────────────────────
-
     def _export_pdf(self, html_content: str, pdf_path: Path) -> Optional[Path]:
-        """Export HTML → PDF dùng weasyprint (nếu available)."""
         try:
-            from weasyprint import HTML, CSS
+            from weasyprint import HTML
+
             HTML(string=html_content).write_pdf(str(pdf_path))
             logger.success(f"[Report] PDF saved: {pdf_path}")
             return pdf_path
         except ImportError:
             logger.warning(
-                "[Report] weasyprint chưa cài — PDF không được tạo. "
-                "Chạy: pip install weasyprint để enable PDF export. "
-                "HTML report đã sẵn sàng để print-to-PDF từ browser."
+                "[Report] weasyprint is not installed. PDF export skipped; HTML report is still available."
             )
             return None
-        except Exception as e:
-            logger.error(f"[Report] PDF export failed: {e}")
-            logger.info("[Report] Mở file HTML trong browser và dùng Ctrl+P để in PDF.")
+        except Exception as exc:
+            logger.error(f"[Report] PDF export failed: {exc}")
             return None
 
-    # ──────────────────────────────────────────────────────────────────
-    # Helpers
-    # ──────────────────────────────────────────────────────────────────
-
     @staticmethod
-    def _generate_executive_summary(
-        alert, risk_level: str, risk_score: float,
-        hash_rep: str, ip_is_c2: bool, asset_crit: str,
-        actions_taken: list,
-    ) -> str:
-        """Sinh đoạn tóm tắt executive bằng ngôn ngữ tự nhiên."""
-        severity_desc = {
-            "critical": "**CRITICAL** — yêu cầu phản ứng khẩn cấp ngay lập tức",
-            "high":     "**HIGH** — yêu cầu điều tra và phản ứng trong vòng 4 giờ",
-            "medium":   "**MEDIUM** — cần review và xử lý trong ngày làm việc",
-            "low":      "**LOW** — theo dõi và log lại, review định kỳ",
-        }.get(risk_level, risk_level)
+    def _generate_executive_summary(response: IncidentResponse) -> str:
+        alert = response.enriched_alert.original_alert
+        enriched = response.enriched_alert
+        indicators: list[str] = []
+        if enriched.hash_enrichment and enriched.hash_enrichment.reputation.value == "malicious":
+            indicators.append("hash reputation is malicious")
+        if enriched.ip_enrichment and enriched.ip_enrichment.is_c2:
+            indicators.append(f"destination IP `{_safe_inline(alert.destination_ip)}` is tagged as C2")
+        if enriched.asset_criticality.value == "critical":
+            indicators.append(f"host `{_safe_inline(alert.hostname)}` is a critical asset")
 
-        indicators = []
-        if hash_rep == "malicious":
-            indicators.append("hash file được xác nhận là **malicious** bởi threat intelligence")
-        if ip_is_c2:
-            indicators.append(f"IP đích `{alert.destination_ip}` được gắn cờ là **C2 server**")
-        if asset_crit == "critical":
-            indicators.append(f"host `{alert.hostname}` là **critical asset** (high business impact)")
-
-        indicator_str = "; ".join(indicators) if indicators else "các chỉ số đáng ngờ"
-
-        actions_str = (
-            ", ".join(f"`{a}`" for a in actions_taken)
-            if actions_taken else "không có hành động tự động"
-        )
+        indicator_text = "; ".join(indicators) if indicators else "no high-confidence malicious indicators were present"
+        actions_taken = [item.value for item in response.triggered_actions if item != ResponseAction.NOTIFY_SOC]
+        action_text = ", ".join(f"`{_safe_inline(item)}`" for item in actions_taken) if actions_taken else "`no_action`"
 
         return (
-            f"Hệ thống EDR phát hiện và gửi alert malware `{alert.detection_name}` "
-            f"trên host `{alert.hostname}` (user: `{alert.username}`). "
-            f"Sau khi SOAR pipeline phân tích, alert được đánh giá là {severity_desc} "
-            f"với Risk Score **{risk_score:.1f}/100**.\n\n"
-            f"Các chỉ số rủi ro chính: {indicator_str}.\n\n"
-            f"Hành động đã tự động thực hiện: {actions_str}."
+            f"EDR generated alert `{_safe_inline(alert.detection_name)}` on host "
+            f"`{_safe_inline(alert.hostname)}` for user `{_safe_inline(alert.username)}`. "
+            f"The SOAR pipeline classified the incident as **{_safe_inline(enriched.risk_level.upper())}** "
+            f"with risk score **{enriched.risk_score:.1f}/100**.\n\n"
+            f"Primary risk indicators: {indicator_text}.\n\n"
+            f"Automated actions taken: {action_text}."
         )
 
     @staticmethod
     def _is_dangerous_name(process_name: str) -> bool:
-        """Quick check xem process có trong dangerous list không."""
-        dangerous = {
-            "mimikatz.exe", "wce.exe", "procdump.exe", "psexec.exe",
-            "nc.exe", "ncat.exe", "netcat.exe", "beacon.exe",
+        dangerous_names = {
+            "mimikatz.exe",
+            "wce.exe",
+            "procdump.exe",
+            "psexec.exe",
+            "nc.exe",
+            "ncat.exe",
+            "netcat.exe",
+            "beacon.exe",
         }
-        return process_name.lower() in dangerous
+        return process_name.lower() in dangerous_names

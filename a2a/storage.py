@@ -370,6 +370,15 @@ class A2ARepository:
             ).fetchall()
             return [self._deserialize_agent(row) for row in rows]
 
+    def get_agent(self, agent_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = self._get_one(
+                connection,
+                "SELECT * FROM agents WHERE agent_id = ?",
+                (agent_id,),
+            )
+            return self._deserialize_agent(row)
+
     def create_task(
         self,
         *,
@@ -441,6 +450,15 @@ class A2ARepository:
                     (workspace,),
                 ).fetchall()
             return [self._deserialize_task(row) for row in rows]
+
+    def get_task(self, task_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = self._get_one(
+                connection,
+                "SELECT * FROM tasks WHERE task_id = ?",
+                (task_id,),
+            )
+            return self._deserialize_task(row)
 
     def claim_task(self, task_id: str, agent_id: str) -> dict[str, Any]:
         with self._connect() as connection:

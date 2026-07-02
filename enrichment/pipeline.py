@@ -16,7 +16,6 @@ Output: EnrichedAlert đầy đủ, sẵn sàng để policy engine xử lý.
 from datetime import datetime
 
 from loguru import logger
-from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
@@ -27,8 +26,9 @@ from enrichment.hash_intel import MockHashIntel
 from enrichment.ip_intel import MockIPIntel
 from enrichment.mitre_mapping import MITREMapper
 from schemas.alert import EnrichedAlert, MalwareAlert
+from terminal_compat import build_console
 
-console = Console()
+console = build_console()
 
 
 class EnrichmentPipeline:

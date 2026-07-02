@@ -12,15 +12,23 @@ from a2a.schemas import (
     WorkspaceCreateRequest,
 )
 from a2a.service import A2AService
+from security import ROLE_A2A_AGENT
 
 
 def make_service(tmp_path: Path) -> A2AService:
     return A2AService(tmp_path / "a2a-test.db")
 
 
-def test_a2a_service_supports_multi_agent_lifecycle(tmp_path: Path):
+def test_a2a_service_supports_multi_agent_lifecycle(
+    tmp_path: Path,
+    a2a_admin_principal,
+    principal_factory,
+):
     service = make_service(tmp_path)
-    workspace = service.ensure_workspace(WorkspaceCreateRequest(workspace="soc-war-room"))
+    workspace = service.ensure_workspace(
+        WorkspaceCreateRequest(workspace="soc-war-room"),
+        principal=a2a_admin_principal,
+    )
     assert workspace.workspace == "soc-war-room"
 
     codex = service.register_agent(
@@ -30,7 +38,8 @@ def test_a2a_service_supports_multi_agent_lifecycle(tmp_path: Path):
             platform="codex",
             role="coordinator",
             capabilities=["plan", "review"],
-        )
+        ),
+        principal=a2a_admin_principal,
     )
     gemini = service.register_agent(
         AgentRegistrationRequest(
@@ -39,7 +48,22 @@ def test_a2a_service_supports_multi_agent_lifecycle(tmp_path: Path):
             platform="gemini",
             role="worker",
             capabilities=["research"],
-        )
+        ),
+        principal=a2a_admin_principal,
+    )
+    codex_principal = principal_factory(
+        "codex-lead",
+        principal_type="agent",
+        agent_id=codex.agent_id,
+        roles=[ROLE_A2A_AGENT],
+        workspaces=["soc-war-room"],
+    )
+    gemini_principal = principal_factory(
+        "gemini-worker",
+        principal_type="agent",
+        agent_id=gemini.agent_id,
+        roles=[ROLE_A2A_AGENT],
+        workspaces=["soc-war-room"],
     )
 
     task = service.create_task(
@@ -50,11 +74,16 @@ def test_a2a_service_supports_multi_agent_lifecycle(tmp_path: Path):
             requested_by=codex.agent_id,
             priority="high",
             labels=["architecture", "a2a"],
-        )
+        ),
+        principal=codex_principal,
     )
     assert task.status == "open"
 
-    claimed = service.claim_task(task.task_id, TaskClaimRequest(agent_id=gemini.agent_id))
+    claimed = service.claim_task(
+        task.task_id,
+        TaskClaimRequest(agent_id=gemini.agent_id),
+        principal=gemini_principal,
+    )
     assert claimed.status == "in_progress"
     assert claimed.assigned_to == gemini.agent_id
 
@@ -66,7 +95,8 @@ def test_a2a_service_supports_multi_agent_lifecycle(tmp_path: Path):
             task_id=task.task_id,
             kind="brief",
             content="Focus on API extension points and keep the existing workflow unchanged.",
-        )
+        ),
+        principal=codex_principal,
     )
     assert note.task_id == task.task_id
 
@@ -74,6 +104,7 @@ def test_a2a_service_supports_multi_agent_lifecycle(tmp_path: Path):
         workspace="soc-war-room",
         agent_id=gemini.agent_id,
         limit=10,
+        principal=gemini_principal,
     )
     assert len(inbox) == 1
     assert inbox[0].content.startswith("Focus on API extension points")
@@ -86,7 +117,8 @@ def test_a2a_service_supports_multi_agent_lifecycle(tmp_path: Path):
             kind="patch",
             uri="docs/a2a-collaboration.md",
             summary="Initial collaboration setup notes.",
-        )
+        ),
+        principal=gemini_principal,
     )
     assert artifact.uri == "docs/a2a-collaboration.md"
 
@@ -96,11 +128,12 @@ def test_a2a_service_supports_multi_agent_lifecycle(tmp_path: Path):
             agent_id=gemini.agent_id,
             result_summary="Integration points documented and handed back.",
         ),
+        principal=gemini_principal,
     )
     assert completed.status == "completed"
     assert completed.result_summary is not None
 
-    events = service.timeline("soc-war-room", 20)
+    events = service.timeline("soc-war-room", 20, principal=a2a_admin_principal)
     event_types = {event.event_type for event in events}
     assert "agent.registered" in event_types
     assert "task.created" in event_types
@@ -108,24 +141,56 @@ def test_a2a_service_supports_multi_agent_lifecycle(tmp_path: Path):
     assert "artifact.published" in event_types
 
 
-def test_a2a_service_prevents_second_agent_from_stealing_claimed_task(tmp_path: Path):
+def test_a2a_service_prevents_second_agent_from_stealing_claimed_task(
+    tmp_path: Path,
+    a2a_admin_principal,
+    principal_factory,
+):
     service = make_service(tmp_path)
-    service.ensure_workspace(WorkspaceCreateRequest(workspace="shared"))
+    service.ensure_workspace(
+        WorkspaceCreateRequest(workspace="shared"),
+        principal=a2a_admin_principal,
+    )
     owner = service.register_agent(
-        AgentRegistrationRequest(workspace="shared", agent_id="codex-1", platform="codex")
+        AgentRegistrationRequest(workspace="shared", agent_id="codex-1", platform="codex"),
+        principal=a2a_admin_principal,
     )
     other = service.register_agent(
-        AgentRegistrationRequest(workspace="shared", agent_id="claude-1", platform="claude")
+        AgentRegistrationRequest(workspace="shared", agent_id="claude-1", platform="claude"),
+        principal=a2a_admin_principal,
+    )
+    owner_principal = principal_factory(
+        "codex-1",
+        principal_type="agent",
+        agent_id=owner.agent_id,
+        roles=[ROLE_A2A_AGENT],
+        workspaces=["shared"],
+    )
+    other_principal = principal_factory(
+        "claude-1",
+        principal_type="agent",
+        agent_id=other.agent_id,
+        roles=[ROLE_A2A_AGENT],
+        workspaces=["shared"],
     )
     task = service.create_task(
         TaskCreateRequest(
             workspace="shared",
             title="Own the ticket",
             requested_by=owner.agent_id,
-        )
+        ),
+        principal=owner_principal,
     )
 
-    service.claim_task(task.task_id, TaskClaimRequest(agent_id=owner.agent_id))
+    service.claim_task(
+        task.task_id,
+        TaskClaimRequest(agent_id=owner.agent_id),
+        principal=owner_principal,
+    )
 
     with pytest.raises(ValueError, match="already claimed"):
-        service.claim_task(task.task_id, TaskClaimRequest(agent_id=other.agent_id))
+        service.claim_task(
+            task.task_id,
+            TaskClaimRequest(agent_id=other.agent_id),
+            principal=other_principal,
+        )

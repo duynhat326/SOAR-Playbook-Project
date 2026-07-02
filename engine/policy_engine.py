@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Optional
 
 from loguru import logger
-from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
@@ -39,8 +38,9 @@ from schemas.alert import (
     ResponseAction,
     Severity,
 )
+from terminal_compat import build_console
 
-console = Console()
+console = build_console()
 
 
 @dataclass

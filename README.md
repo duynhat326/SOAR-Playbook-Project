@@ -2,11 +2,13 @@
 
 <div align="center">
 
-![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.13%20validated-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Pydantic](https://img.shields.io/badge/Pydantic-v2-E92063?style=for-the-badge)
+![FastAPI](https://img.shields.io/badge/FastAPI-API%20Layer-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-Persistence-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
 ![MITRE ATT&CK](https://img.shields.io/badge/MITRE-ATT%26CK-red?style=for-the-badge)
-![pytest](https://img.shields.io/badge/pytest-14%20test%20cases-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-55%20tests%20passing-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
 ![Blue Team](https://img.shields.io/badge/Blue%20Team-SOC%20Project-0078D4?style=for-the-badge)
 
 **Blue Team CV Project — SOC Analyst tự động hoá**
@@ -39,433 +41,626 @@
 
 ### Bài toán
 
-Trong môi trường SOC thực tế, một analyst có thể nhận **hàng trăm alert mỗi ngày** từ các EDR/SIEM. Hầu hết thời gian bị tiêu tốn vào các bước thủ công lặp lại:
+Trong môi trường SOC thực tế, analyst thường phải lặp lại các bước rất tốn thời gian:
 
-1. Tìm kiếm hash trên VirusTotal
-2. Check IP trên AbuseIPDB
-3. Tra CMDB xem máy có quan trọng không
-4. Map sang MITRE ATT&CK để hiểu tactic
-5. Quyết định có cần isolate/block/escalate không
-6. Viết incident ticket và báo cáo
+1. Nhận alert từ EDR hoặc SIEM.
+2. Tra hash trên VirusTotal hoặc nguồn threat intel tương tự.
+3. Kiểm tra destination IP trên AbuseIPDB hoặc feed C2.
+4. Tra CMDB để biết host đó có phải tài sản quan trọng không.
+5. Map hành vi sang MITRE ATT&CK để hiểu tactic/technique.
+6. Tính mức độ ưu tiên, quyết định isolate / kill / block / escalate.
+7. Tạo ticket, ghi nhận evidence, viết incident report.
 
-**SOAR Playbook** tự động hóa toàn bộ quy trình này, giúp analyst tập trung vào các quyết định phức tạp hơn.
+**SOAR Playbook** mô phỏng toàn bộ chuỗi xử lý này bằng một pipeline Python rõ ràng, dễ đọc, dễ demo, và đủ thực tế để dùng như một project Blue Team / SOC CV.
 
-### Mục tiêu kỹ thuật (CV)
+### Mục tiêu kỹ thuật
 
-- ✅ Thể hiện tư duy thiết kế **SOAR Playbook thực tế**
-- ✅ Khả năng viết **detection/policy engine** với rule-based logic
-- ✅ Tích hợp **threat intelligence** (mock, có thể upgrade lên API thật)
-- ✅ **MITRE ATT&CK** framework awareness
-- ✅ **Clean code, modular design** — dễ đọc khi phỏng vấn hỏi về logic
-- ✅ Kết quả chuyên nghiệp: **Streamlit dashboard + PDF report**
+- Thể hiện cách thiết kế một **SOAR workflow** có cấu trúc, không phải script rời rạc.
+- Dùng **Pydantic** để chuẩn hoá alert schema và contract giữa các bước.
+- Tách rõ **enrichment**, **risk scoring**, **policy engine**, **action execution**, **reporting**, **persistence**, **API**.
+- Hỗ trợ nhiều entrypoint: **CLI**, **FastAPI**, **Streamlit dashboard**, **A2A collaboration bus**.
+- Có **persistence + idempotent replay** để cùng một `alert_id` không re-run side effects không cần thiết.
+- Có **policy-as-data** qua YAML, không hard-code mọi rule trong logic.
+- Có **auth/RBAC và security regression coverage** cho incident API và A2A API.
+
+### Trạng thái hiện tại
+
+Project hiện không còn là bản demo policy engine đơn thuần. Nó đã có thêm:
+
+- **FastAPI layer** cho xử lý incident và tra cứu incident history.
+- **SQLite persistence** cho incidents, action results, report artifacts.
+- **A2A local collaboration bus** để nhiều agent/tab phối hợp làm việc.
+- **Auth + RBAC** cho incident API và A2A API bằng bearer token.
+- **Sanitized reporting** để chặn stored HTML injection trong report HTML.
+- **Regression pentest runner** để kiểm tra security fixes không bị bật ngược trở lại.
 
 ---
 
 ## 🚀 Demo nhanh
 
 ```bash
-# 1. Clone & cài dependencies
-git clone <repo-url>
-cd "SOAR Playbook"
+# 1. Cài dependencies
 pip install -r requirements.txt
 
-# 2. Chạy pipeline với alert ngẫu nhiên
-python main.py --scenario mixed
+# 2. Chạy workflow với scenario mặc định
+python main.py --scenario mixed --no-report
 
-# 3. Chạy với sample alert có sẵn
+# 3. Chạy với sample alert "full critical"
 python main.py --alert data/sample_alerts/alert_04_full_critical.json
 
-# 4. Mở Streamlit dashboard
+# 4. Chạy API
+python -m uvicorn api.app:app --reload
+
+# 5. Chạy dashboard
 streamlit run dashboard/app.py
 
-# 5. Chạy unit tests
-pytest tests/ -v
+# 6. Chạy test suite
+pytest tests -q
+
+# 7. Chạy pentest regression
+python scripts/run_pentest.py
 ```
+
+Các lệnh smoke-test đã được chạy lại trên Windows ngày **2026-07-02**:
+
+- `python main.py --scenario mixed --seed 2024 --no-report`
+- `python main.py --alert data/sample_alerts/alert_04_full_critical.json --output-dir output\smoke-readme`
+- `python -m a2a.cli ...` lifecycle smoke với auth token
+- `pytest tests -q` → **55 passed**
+- `python scripts/run_pentest.py` → **0 findings**
 
 ---
 
 ## 🏗️ Kiến trúc hệ thống
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    SOAR Malware Playbook                         │
-│                                                                  │
-│  ┌──────────────┐    ┌─────────────────────────────────────┐    │
-│  │ Alert Input  │    │        Enrichment Pipeline           │    │
-│  │              │    │                                      │    │
-│  │ • JSON file  │───▶│  Step 2: Hash Intel (mock VT)       │    │
-│  │ • Generator  │    │  Step 3: IP Intel   (mock AbuseIPDB)│    │
-│  │ • Streamlit  │    │  Step 4: Asset DB   (mock CMDB)     │    │
-│  │ • CLI arg    │    │  Step 5: MITRE Mapping              │    │
-│  └──────────────┘    │  Step 6: Risk Scoring               │    │
-│                      └──────────────────┬────────────────┘    │
-│                                         │ EnrichedAlert         │
-│                      ┌──────────────────▼────────────────┐    │
-│                      │         Policy Engine (Step 7)     │    │
-│                      │                                    │    │
-│                      │  Rule 1: Hash MALICIOUS?           │    │
-│                      │    → ISOLATE HOST                  │    │
-│                      │  Rule 2: Dangerous Process?        │    │
-│                      │    → KILL PROCESS                  │    │
-│                      │  Rule 3: Asset CRITICAL?           │    │
-│                      │    → ESCALATE                      │    │
-│                      │  Rule 4: IP is C2?                 │    │
-│                      │    → BLOCK IP                      │    │
-│                      │  Always: CREATE TICKET + NOTIFY    │    │
-│                      └──────────────────┬────────────────┘    │
-│                                         │ IncidentResponse      │
-│                      ┌──────────────────▼────────────────┐    │
-│                      │         Output Layer               │    │
-│                      │                                    │    │
-│                      │  • Markdown Report (.md)           │    │
-│                      │  • HTML Report    (.html)          │    │
-│                      │  • PDF Report     (.pdf)           │    │
-│                      │  • Ticket JSON    (mock)           │    │
-│                      │  • Streamlit Dashboard             │    │
-│                      └────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│                          SOAR Malware Playbook                            │
+├────────────────────────────────────────────────────────────────────────────┤
+│ Entry Points                                                               │
+│                                                                            │
+│   CLI (main.py)   FastAPI (api/app.py)   Streamlit (dashboard/app.py)     │
+│          │                 │                        │                      │
+│          └─────────────────┴──────────────┬─────────┘                      │
+│                                           │                                 │
+│                           services/workflow_service.py                      │
+│                                           │                                 │
+├───────────────────────────────────────────┼────────────────────────────────┤
+│ Core Pipeline                             │ Collaboration                  │
+│                                           │                                │
+│  Step 1  Alert ingest / validate          │  a2a/cli.py                    │
+│  Step 2  Hash enrichment                  │  a2a/service.py                │
+│  Step 3  IP enrichment                    │  a2a/storage.py                │
+│  Step 4  Asset criticality lookup         │  Workspace / Agent / Task      │
+│  Step 5  MITRE ATT&CK mapping             │  Message / Artifact / Timeline │
+│  Step 6  Risk scoring                     │                                │
+│  Step 7  Policy evaluation + actions      │                                │
+│                                           │                                │
+├───────────────────────────────────────────┼────────────────────────────────┤
+│ Output & Storage                          │ Security                       │
+│                                           │                                │
+│  Markdown / HTML / optional PDF report    │  security/auth.py              │
+│  Ticket + action results                  │  Bearer auth                   │
+│  SQLite incident repository               │  Role-based access control     │
+│  Incident list / detail APIs              │  Agent identity binding        │
+│  Replay / artifact materialization        │  Redaction + output sanitizing │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Interface Design (dễ upgrade lên API thật)
+### Luồng chính
 
-```python
-# Thiết kế theo Abstract Base Class — swap mock ↔ API thật chỉ cần 1 dòng
+1. Alert đi vào từ file JSON, generator, dashboard, hoặc HTTP request.
+2. `EnrichmentPipeline` chạy hash/IP/asset/MITRE mapping.
+3. `RiskScoringEngine` tính điểm tổng hợp 0-100.
+4. `PolicyEngine` áp rule mặc định hoặc rule YAML đã cấu hình.
+5. Mock actions chạy và trả về `ActionResult`.
+6. `ReportGenerator` sinh Markdown + HTML, optional PDF.
+7. `SQLiteIncidentRepository` persist kết quả để phục vụ replay và API lookup.
 
-class BaseHashIntel(ABC):
-    @abstractmethod
-    def lookup(self, file_hash: str) -> HashEnrichment: ...
+### Collaboration layer
 
-# Mock (hiện tại):
-hash_intel = MockHashIntel()          # Đọc từ mock_hash_db.json
+Ngoài workflow xử lý alert, project còn có **A2A bus nội bộ** cho nhiều agent/tab phối hợp:
 
-# Upgrade lên VirusTotal thật:
-hash_intel = VirusTotalHashIntel(api_key="VT_API_KEY")  # Chỉ cần thêm class này
-```
+- Workspace để gom sprint hoặc scope công việc.
+- Agent registration và heartbeat.
+- Task lifecycle: create / claim / complete.
+- Message inbox theo `agent_id`.
+- Artifact handoff để đính kèm docs, patch notes, evidence.
+- Timeline để lead theo dõi toàn bộ diễn biến.
+
+### Security boundary
+
+Sau vòng hardening và pentest remediation:
+
+- Incident API yêu cầu role `incident_process` hoặc `incident_read`.
+- A2A API yêu cầu `a2a_admin`, `a2a_read`, hoặc `a2a_agent`.
+- A2A write operations được **bind với authenticated agent identity**, không còn tin `agent_id` do caller tự khai.
+- Incident responses mặc định **redact** các field nhạy cảm như `username`, `command_line`, `file_hash`, `file_path`.
+- HTML report escape dữ liệu alert trước khi render.
 
 ---
 
 ## 🔄 Workflow 7 bước
 
-| Bước | Tên | Module | Mô tả |
-|------|-----|--------|-------|
-| **1** | Nhận Alert | `schemas/alert.py` | Parse & validate JSON alert bằng Pydantic |
-| **2** | Enrich Hash | `enrichment/hash_intel.py` | Lookup SHA256 hash (mock VirusTotal) |
-| **3** | Enrich IP | `enrichment/ip_intel.py` | Lookup destination IP (mock AbuseIPDB), detect C2 |
-| **4** | Asset Criticality | `enrichment/asset_db.py` | Lookup hostname → criticality (mock CMDB) |
-| **5** | MITRE ATT&CK | `enrichment/mitre_mapping.py` | Map process/cmdline → Technique ID + Tactic |
-| **6** | Risk Scoring | `engine/risk_scoring.py` | Weighted sum 5 components → score 0-100 |
-| **7** | Policy + Actions | `engine/policy_engine.py` | Evaluate 4 rules → execute actions → ticket |
+| Bước | Tên | Module chính | Mô tả |
+|------|-----|--------------|-------|
+| **1** | Nhận Alert | `schemas/alert.py` | Parse & validate payload bằng Pydantic |
+| **2** | Enrich Hash | `enrichment/hash_intel.py` | Lookup hash từ mock threat intel database |
+| **3** | Enrich IP | `enrichment/ip_intel.py` | Lookup destination IP, reputation, confidence, C2 flag |
+| **4** | Asset Criticality | `enrichment/asset_db.py` | Tra hostname trong mock CMDB để xác định business impact |
+| **5** | MITRE ATT&CK Mapping | `enrichment/mitre_mapping.py` | Map process name và command line sang technique/tactic |
+| **6** | Risk Scoring | `engine/risk_scoring.py` | Tính weighted risk score và risk level |
+| **7** | Policy + Actions | `engine/policy_engine.py` | Evaluate rules, thực thi actions, tạo ticket, notify SOC |
 
-### Risk Scoring Formula
+### Risk scoring formula
 
-```
+```text
 Risk Score (0-100) =
-    Hash Reputation    × 30%   (Malicious=1.0, Suspicious=0.5+ratio, Clean=0)
-  + IP / C2 Flag       × 25%   (C2 bonus +0.4, confidence normalized)
-  + Asset Criticality  × 20%   (Critical=1.0, Normal=0.45, Low=0.1)
-  + Alert Severity     × 15%   (Critical=1.0, High=0.75, Medium=0.45, Low=0.2)
-  + MITRE Techniques   × 10%   (max weight + count bonus)
+    Hash Reputation    × 30%
+  + IP / C2 Signal     × 25%
+  + Asset Criticality  × 20%
+  + Alert Severity     × 15%
+  + MITRE Context      × 10%
 ```
+
+### Risk level mapping
 
 | Score | Risk Level |
-|-------|-----------|
-| 0 – 25 | 🟢 Low |
-| 26 – 50 | 🟡 Medium |
-| 51 – 75 | 🔴 High |
-| 76 – 100 | 🔴🔴 Critical |
+|-------|------------|
+| `0 - 25` | Low |
+| `26 - 50` | Medium |
+| `51 - 75` | High |
+| `76 - 100` | Critical |
+
+### Điểm quan trọng trong version hiện tại
+
+- **Idempotent replay**: cùng một `alert_id` đã persist sẽ không chạy lại side effects nếu không cần.
+- **Artifact materialization**: nếu record cũ chưa có HTML/PDF, replay có thể sinh bổ sung report rồi persist lại.
+- **Queue-ready boundary**: policy engine đã có execution trace và correlation hook scaffold cho async/queued execution sau này.
 
 ---
 
 ## ⚖️ Policy Engine — 4 Response Rules
 
-| Rule | Điều kiện | Action | Lý do |
-|------|-----------|--------|-------|
-| **Rule 1** | Hash reputation = **MALICIOUS** | `ISOLATE_HOST` | Hash confirmed malicious = active malware, cần cách ly ngay để ngăn lateral movement |
-| **Rule 2** | Process nằm trong **dangerous process blacklist** | `KILL_PROCESS` | Tools như mimikatz, psexec không bao giờ nên chạy trên production host |
-| **Rule 3** | Asset criticality = **CRITICAL** | `ESCALATE` | DC/Finance server compromise = business impact cao, cần analyst xử lý thủ công |
-| **Rule 4** | Destination IP được gắn cờ **C2** | `BLOCK_IP` | Active C2 beaconing → block để cắt kênh điều khiển malware |
-| *Always* | Mọi alert | `CREATE_TICKET` + `NOTIFY_SOC` | Đảm bảo audit trail và SOC awareness |
+Mặc định hệ thống đang có 4 response rules cốt lõi:
 
-> **Edge case được xử lý:** IP malicious nhưng **không phải C2** → không auto-block (tránh block nhầm CDN), chỉ ghi vào reasoning để SOC review thủ công.
+| Rule | Điều kiện | Action | Ý nghĩa vận hành |
+|------|-----------|--------|------------------|
+| **Rule 1** | Hash reputation = `MALICIOUS` | `ISOLATE_HOST` | Hash đã bị threat intel xác nhận là độc hại, cần cắt host ra khỏi mạng |
+| **Rule 2** | Process thuộc dangerous process blacklist | `KILL_PROCESS` | Tool như `mimikatz.exe`, `wce.exe`, `psexec.exe` không nên tồn tại trên endpoint bình thường |
+| **Rule 3** | Asset criticality = `CRITICAL` | `ESCALATE` | Tài sản quan trọng như finance workstation / domain controller cần analyst xử lý thủ công |
+| **Rule 4** | Destination IP bị đánh dấu `is_c2 = true` | `BLOCK_IP` | Có tín hiệu beaconing hoặc điều khiển từ C2 |
+| **Always** | Mọi alert | `CREATE_TICKET` + `NOTIFY_SOC` | Luôn giữ audit trail và SOC visibility |
+
+### Policy-as-data
+
+Rules không còn bị khóa chặt trong code. Phần cấu hình nằm tại:
+
+```text
+policies/response_rules.yaml
+```
+
+YAML hiện hỗ trợ:
+
+- `enabled` để bật/tắt từng rule
+- `matches` theo type điều kiện
+- `thresholds.min_risk_score`
+- `thresholds.min_severity`
+- `guards.username_allowlist`
+- `execution.mode` kiểu `sync` hoặc `queued`
+- correlation fields để chuẩn bị cho async remediation
+
+### Tại sao cách này đáng giá
+
+- Dễ explain trong interview: rule logic rõ ràng, audit được.
+- Dễ nâng cấp: đổi threshold hoặc guard mà không phải sửa code policy engine.
+- Dễ mở rộng: sau này thêm rule “sandbox first”, “quarantine only if host is not server”, hoặc “do not auto-kill domain controller process” sẽ sạch hơn nhiều.
 
 ---
 
 ## 🛠️ Cài đặt & Chạy
 
-### Prerequisites
+### 1. Prerequisites
 
-- Python 3.11+
-- pip
+- **Khuyến nghị:** Python **3.13.x**
+- **Đã test thực tế:** Python **3.13.0** trên Windows
+- **Tương thích mục tiêu:** Python `3.11+`
+- `pip`
 
-### Cài đặt
+### 2. Cài dependencies
 
 ```bash
-# Clone repo
-git clone <repo-url>
-cd "SOAR Playbook"
-
-# Cài tất cả dependencies
 pip install -r requirements.txt
-
-# (Optional) PDF export — cần GTK runtime trên Windows
-pip install weasyprint
-# Windows: xem https://doc.courtbouillon.org/weasyprint/stable/first_steps.html#windows
 ```
 
-### Chạy Pipeline (CLI)
+`requirements.txt` hiện bao gồm:
+
+- `pydantic` cho schema và data contract
+- `fastapi` + `uvicorn` cho API
+- `streamlit` cho dashboard
+- `markdown2` cho render Markdown → HTML
+- `weasyprint` cho HTML → PDF (optional)
+- `PyYAML` cho policy-as-data
+- `pytest` + `pytest-cov` cho test
+
+### 3. Chạy CLI workflow
 
 ```bash
-# Scenario mặc định (mixed — tất cả 4 trigger)
-python main.py
+# Scenario mặc định
+python main.py --scenario mixed
 
-# Chọn scenario cụ thể
-python main.py --scenario malicious_hash
-python main.py --scenario c2_communication
-python main.py --scenario critical_asset
-python main.py --scenario dangerous_process
-python main.py --scenario benign
+# Chạy nhanh, bỏ report generation
+python main.py --scenario mixed --seed 2024 --no-report
 
-# Dùng alert từ file JSON
+# Chạy bằng alert JSON có sẵn
 python main.py --alert data/sample_alerts/alert_04_full_critical.json
-python main.py --alert data/sample_alerts/alert_01_malicious_hash.json
 
-# Custom seed để reproduce kết quả
-python main.py --scenario mixed --seed 42
-
-# Không sinh report (chạy nhanh hơn)
-python main.py --no-report
+# Ghi report vào thư mục riêng
+python main.py --alert data/sample_alerts/alert_04_full_critical.json --output-dir output\smoke-readme
 ```
 
-### Streamlit Dashboard
+### 4. Chạy FastAPI
+
+```bash
+python -m uvicorn api.app:app --reload
+```
+
+Các endpoint chính:
+
+- `GET /health`
+- `POST /api/v1/incidents/process`
+- `POST /api/v1/incidents/process-scenario`
+- `GET /api/v1/incidents`
+- `GET /api/v1/incidents/by-alert/{alert_id}`
+- `GET /api/v1/incidents/by-ticket/{ticket_id}`
+- `GET /api/v1/a2a/health`
+- `POST /api/v1/a2a/workspaces`
+- `POST /api/v1/a2a/agents/register`
+- `POST /api/v1/a2a/tasks`
+- `GET /api/v1/a2a/messages`
+
+### 5. Auth / RBAC cho API và A2A
+
+Project hiện dùng bearer token cấu hình qua biến môi trường:
+
+```powershell
+$env:SOAR_AUTH_TOKENS_JSON = '{"tokens":[
+  {"token":"incident-process-token","principal_id":"incident-processor","principal_type":"user","roles":["incident_process"],"workspaces":["*"]},
+  {"token":"incident-read-token","principal_id":"incident-reader","principal_type":"user","roles":["incident_read"],"workspaces":["*"]},
+  {"token":"a2a-admin-token","principal_id":"a2a-admin","principal_type":"user","roles":["a2a_admin","a2a_read"],"workspaces":["*"]}
+]}'
+```
+
+Role hiện có:
+
+- `incident_process`
+- `incident_read`
+- `a2a_admin`
+- `a2a_read`
+- `a2a_agent`
+
+Với A2A agent principal:
+
+- token phải có `principal_type = "agent"`
+- phải bind với đúng `agent_id`
+- không thể giả danh agent khác khi claim task, post message, poll inbox, publish artifact
+
+### 6. Chạy dashboard
 
 ```bash
 streamlit run dashboard/app.py
 ```
 
-Truy cập: http://localhost:8501
+Dashboard dùng chung `SoarWorkflowService`, nên logic xử lý giữa CLI, API và dashboard là nhất quán.
 
-**Tính năng dashboard:**
-- 🎲 Generate alert theo scenario hoặc load từ file JSON
-- 📊 Xem KPI: Risk Score, Actions triggered, MITRE techniques
-- 🔍 Enrichment details: hash/IP/asset/MITRE với progress bars
-- 📋 Đọc Incident Report trực tiếp trong browser + download Markdown
-- 📁 Alert history trong session
+### 7. Chạy A2A bus cho team nhiều agent
 
-### Unit Tests
+CLI A2A:
 
 ```bash
-# Chạy tất cả tests
-pytest tests/ -v
-
-# Chạy với coverage report
-pytest tests/ -v --cov=engine --cov-report=term-missing
-
-# Chạy 1 test cụ thể
-pytest tests/test_policy_engine.py::test_mixed_scenario_triggers_all_four_actions -v
+python -m a2a.cli --help
 ```
+
+Ví dụ tối giản:
+
+```powershell
+$env:SOAR_AUTH_TOKEN = "a2a-admin-token"
+python -m a2a.cli ensure-workspace --workspace soar-sprint-01
+
+python -m a2a.cli register-agent --workspace soar-sprint-01 --agent-id codex-lead --platform codex --role leader --capability plan
+python -m a2a.cli register-agent --workspace soar-sprint-01 --agent-id codex-worker-1 --platform codex --role worker --capability implementation
+python -m a2a.cli register-agent --workspace soar-sprint-01 --agent-id codex-worker-2 --platform codex --role worker --capability testing
+```
+
+Nếu muốn bootstrap nhanh team 3 Codex tabs:
+
+```powershell
+.\scripts\bootstrap-3-codex-team.ps1
+```
+
+Hoặc:
+
+```powershell
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\scripts\bootstrap-3-codex-team.ps1 -Workspace soar-sprint-01
+```
+
+Tài liệu phối hợp agent:
+
+- `docs/a2a-collaboration.md`
+- `docs/three-codex-team.md`
+- `.agents/a2a-playbook.md`
 
 ---
 
 ## 📁 Cấu trúc thư mục
 
-```
+```text
 SOAR Playbook/
-│
-├── main.py                          # Entrypoint CLI — chạy full pipeline
-│
-├── schemas/
-│   └── alert.py                     # Pydantic models: MalwareAlert, EnrichedAlert, IncidentResponse
-│
-├── alert_generator/
-│   └── generator.py                 # Faker-based alert generator (7 scenarios)
-│
-├── enrichment/
-│   ├── base.py                      # Abstract base classes (interface cho swap API thật)
-│   ├── hash_intel.py                # Mock VirusTotal hash lookup
-│   ├── ip_intel.py                  # Mock AbuseIPDB IP lookup
-│   ├── asset_db.py                  # Mock CMDB asset criticality
-│   ├── mitre_mapping.py             # MITRE ATT&CK pattern matching engine
-│   └── pipeline.py                  # Orchestrator bước 2-6 với Rich trace
-│
-├── engine/
-│   ├── risk_scoring.py              # Weighted risk score (5 components)
-│   └── policy_engine.py             # 4 response rules + action execution
-│
+├── main.py
+├── terminal_compat.py
 ├── actions/
-│   ├── isolate_host.py              # Mock EDR isolation
-│   ├── kill_process.py              # Mock process termination
-│   ├── block_ip.py                  # Mock firewall block
-│   ├── ticketing.py                 # Mock ticket creation (TheHive/Jira-like)
-│   └── notify_soc.py                # Mock SOC notification (Slack-like)
-│
-├── reporting/
-│   └── report_generator.py          # Sinh Markdown + HTML + PDF report
-│
+├── a2a/
+│   ├── cli.py
+│   ├── schemas.py
+│   ├── service.py
+│   └── storage.py
+├── alert_generator/
+├── api/
+│   ├── app.py
+│   └── schemas.py
 ├── dashboard/
-│   └── app.py                       # Streamlit dashboard (4 tabs)
-│
 ├── data/
-│   ├── mock_hash_db.json            # Hash reputation DB (7 records)
-│   ├── mock_ip_db.json              # IP reputation DB (7 records, 3 C2)
-│   ├── mock_asset_db.json           # CMDB (8 hosts: critical/normal/low)
-│   ├── mitre_technique_map.json     # 8 process + 16 cmdline patterns → ATT&CK
+│   ├── mock_hash_db.json
+│   ├── mock_ip_db.json
+│   ├── mock_asset_db.json
+│   ├── mitre_technique_map.json
 │   └── sample_alerts/
-│       ├── alert_01_malicious_hash.json    # → Rule 1: ISOLATE
-│       ├── alert_02_c2_communication.json  # → Rule 4: BLOCK IP
-│       ├── alert_03_critical_asset.json    # → Rule 3: ESCALATE
-│       ├── alert_04_full_critical.json     # → Tất cả 4 rules
-│       └── alert_05_benign.json            # → No action (ticket only)
-│
-├── tests/
-│   └── test_policy_engine.py        # 14 pytest test cases
-│
-├── output/                          # Auto-generated khi chạy pipeline
-│   ├── reports/                     # Incident reports (.md, .html, .pdf)
-│   ├── tickets.json                 # Mock ticket database
-│   ├── isolated_hosts.json          # Mock EDR isolation log
-│   ├── killed_processes.json        # Mock process kill log
-│   ├── blocked_ips.json             # Mock firewall block list
-│   └── pipeline.log                 # Debug log file
-│
-├── requirements.txt
-├── pytest.ini
-└── README.md
+├── docs/
+├── engine/
+│   ├── action_dispatcher.py
+│   ├── policy_engine.py
+│   ├── policy_loader.py
+│   └── risk_scoring.py
+├── enrichment/
+├── output/
+├── policies/
+│   └── response_rules.yaml
+├── reporting/
+│   └── report_generator.py
+├── schemas/
+├── scripts/
+│   ├── bootstrap-3-codex-team.ps1
+│   └── run_pentest.py
+├── security/
+│   └── auth.py
+├── services/
+│   └── workflow_service.py
+├── storage/
+│   └── sqlite_repository.py
+└── tests/
 ```
+
+### Một vài thư mục đáng chú ý
+
+- `services/` là lớp orchestration dùng chung cho CLI, API, dashboard.
+- `storage/` chứa read-side và persistence cho incident history.
+- `security/` chứa auth/RBAC dùng chung giữa API và A2A.
+- `scripts/` chứa tooling để bootstrap multi-agent và chạy pentest regression.
+- `docs/` chứa roadmap, handoff notes, pentest report, tài liệu teamwork.
 
 ---
 
 ## 🔧 Tech Stack & Lý do chọn
 
-| Library | Vai trò | Lý do chọn |
-|---------|---------|-----------|
-| **Pydantic v2** | Alert schema validation | Type-safe, auto validation, dễ serialize JSON, standard trong production code |
-| **Faker** | Sinh alert test | Tạo data đa dạng, realistic — giúp test nhiều scenario mà không cần dữ liệu thật |
-| **Rich** | Console output | Trace từng bước đẹp, màu sắc → dễ demo khi phỏng vấn và debug |
-| **Loguru** | Structured logging | Log ra file với rotation, không cần config phức tạp như logging stdlib |
-| **Streamlit** | Dashboard | Code nhanh (≤300 dòng), đẹp sẵn, không cần frontend skill |
-| **markdown2** | Markdown → HTML | Nhẹ, không dependency ngoài, support tables và code blocks |
-| **weasyprint** | HTML → PDF | CSS-based PDF — report giống in từ browser, không phải layout code |
-| **pytest** | Unit testing | Standard Python testing, fixture system giúp test isolation tốt |
-| **Abstract Base Class** | Interface design | Đảm bảo tất cả enrichment module có cùng interface → swap API thật dễ dàng |
+| Công nghệ | Vai trò | Lý do chọn |
+|-----------|---------|------------|
+| **Python 3.13** | Runtime chính | Bản Python mới, type hints tốt, phù hợp codebase automation + data processing |
+| **Pydantic v2** | Schema validation | Chuẩn hoá alert, response, persistence payload, OpenAPI schema |
+| **FastAPI** | API layer | Tạo HTTP API nhanh, typed, có OpenAPI docs và dependency injection rõ ràng |
+| **SQLite** | Persistence | Nhẹ, local-first, phù hợp demo project nhưng vẫn đủ cho read-side API và replay |
+| **Streamlit** | Dashboard | Dựng analyst UI nhanh, dễ demo trực tiếp trong portfolio |
+| **Rich + Loguru** | CLI UX + logging | Output terminal rõ, có log chi tiết theo từng bước pipeline |
+| **PyYAML** | Policy-as-data | Cho phép tách rule config ra khỏi code, dễ chỉnh threshold/guard |
+| **markdown2** | Report render | Đủ nhẹ để convert Markdown sang HTML đẹp, không cần stack frontend riêng |
+| **WeasyPrint** | PDF export | Có thể xuất PDF từ HTML khi muốn report gửi mail hoặc đính kèm artifact |
+| **pytest** | Test automation | Dễ giữ regression coverage cho policy, persistence, API, A2A, security |
+
+### Vì sao Python 3.13 đáng nói ở đây
+
+Project đã được chạy thật trên **Python 3.13.0**. Điều này quan trọng vì:
+
+- Nó xác nhận codebase không chỉ chạy trên môi trường “an toàn” cũ.
+- Nó giúp lộ các cảnh báo `datetime.utcnow()` deprecated cần cleanup dần.
+- Nó làm README và CV đáng tin hơn khi nói “đã test trên Python mới”.
+
+### Security stack hiện tại
+
+Ngoài functional stack, phần security hiện có:
+
+- bearer token auth
+- role-based authorization
+- agent identity binding
+- API redaction
+- report HTML escaping
+- pentest regression script
 
 ---
 
 ## 🧪 Sample Alerts — Test Cases
 
-5 alert mẫu trong `data/sample_alerts/` cover tất cả nhánh policy:
+5 alert mẫu trong `data/sample_alerts/` hiện cover các nhánh policy phổ biến:
 
-| File | Scenario | Expected Actions |
-|------|----------|-----------------|
-| `alert_01_malicious_hash.json` | Hash Cobalt Strike (65/72 vendors) | `ISOLATE_HOST` |
-| `alert_02_c2_communication.json` | Kết nối tới Tor exit node (C2) | `BLOCK_IP` |
-| `alert_03_critical_asset.json` | PowerShell trên Domain Controller | `ESCALATE` |
-| `alert_04_full_critical.json` | BlackCat ransomware + mimikatz + finance server + RU C2 | `ISOLATE` + `KILL` + `ESCALATE` + `BLOCK` |
-| `alert_05_benign.json` | Backup script hợp lệ | *No action* (ticket only) |
+| File | Scenario | Kỳ vọng |
+|------|----------|---------|
+| `alert_01_malicious_hash.json` | Hash độc hại | Trigger `ISOLATE_HOST` |
+| `alert_02_c2_communication.json` | Kết nối tới IP C2 | Trigger `BLOCK_IP` |
+| `alert_03_critical_asset.json` | Host critical asset | Trigger `ESCALATE` |
+| `alert_04_full_critical.json` | Full critical chain | Trigger cả 4 rule chính |
+| `alert_05_benign.json` | Alert benign / low risk | Không auto-remediate, vẫn tạo ticket + notify |
 
-```bash
-# Chạy tất cả 5 sample alerts
-for f in data/sample_alerts/*.json; do
-    python main.py --alert "$f" --no-report
-done
+### Chạy lần lượt các sample alert
+
+PowerShell:
+
+```powershell
+Get-ChildItem data\sample_alerts\*.json | ForEach-Object {
+  python main.py --alert $_.FullName --no-report
+}
 ```
 
 ---
 
 ## ✅ Unit Tests
 
-14 test cases trong `tests/test_policy_engine.py`:
+### Kết quả hiện tại
 
+```bash
+pytest tests -q
 ```
-tests/test_policy_engine.py::test_rule1_hash_malicious_triggers_isolate    PASSED
-tests/test_policy_engine.py::test_rule1_hash_suspicious_does_not_isolate   PASSED  ← boundary
-tests/test_policy_engine.py::test_rule1_hash_clean_no_isolate              PASSED
-tests/test_policy_engine.py::test_rule2_dangerous_process_triggers_kill    PASSED
-tests/test_policy_engine.py::test_rule2_normal_process_no_kill             PASSED
-tests/test_policy_engine.py::test_rule2_other_dangerous_processes          PASSED  ← parametric
-tests/test_policy_engine.py::test_rule3_critical_asset_triggers_escalate   PASSED
-tests/test_policy_engine.py::test_rule3_normal_asset_no_escalate           PASSED
-tests/test_policy_engine.py::test_rule3_low_asset_no_escalate              PASSED
-tests/test_policy_engine.py::test_rule4_c2_ip_triggers_block               PASSED
-tests/test_policy_engine.py::test_rule4_malicious_ip_not_c2_no_block       PASSED  ← edge case
-tests/test_policy_engine.py::test_rule4_clean_ip_no_block                  PASSED
-tests/test_policy_engine.py::test_mixed_scenario_triggers_all_four_actions PASSED
-tests/test_policy_engine.py::test_benign_alert_no_remediation_actions      PASSED
-tests/test_policy_engine.py::test_always_creates_ticket                    PASSED
-tests/test_policy_engine.py::test_always_notifies_soc                      PASSED
+
+Kết quả mới nhất:
+
+- **55 tests passed**
+- Không có test fail sau đợt hardening và pentest remediation
+
+### Nhóm test đang có
+
+- `tests/test_policy_engine.py`
+  - rule behavior
+  - queue mode
+  - correlation hooks
+- `tests/test_policy_loader.py`
+  - YAML config validation
+  - fallback defaults
+  - thresholds / guards
+- `tests/test_sqlite_repository.py`
+  - persistence
+  - upsert / lookup
+  - list filters
+- `tests/test_workflow_service.py`
+  - orchestration
+  - idempotent replay
+  - artifact materialization
+- `tests/test_api_app.py`
+  - process / list / read API
+  - auth-aware route usage
+- `tests/test_a2a_service.py`
+  - workspace / task / message / artifact lifecycle
+- `tests/test_a2a_api.py`
+  - API-facing A2A integration
+- `tests/test_security_regressions.py`
+  - auth enforcement
+  - inbox isolation
+  - spoofing rejection
+  - report escaping
+
+### Pentest kết quả mới nhất
+
+```bash
+python scripts/run_pentest.py
 ```
+
+Kết quả ngày **2026-07-02**:
+
+- `finding_count = 0`
+- report chính thức: `docs/pentest-report-2026-07-02.md`
+- evidence machine-readable mới nhất: `output/pentest/20260702T055951Z/pentest-results.json`
 
 ---
 
 ## 📄 Incident Report Output
 
-Mỗi alert được xử lý sinh ra 3 file trong `output/reports/`:
+Mỗi alert có thể sinh ra 3 artifact:
 
-### Markdown (`.md`)
-Dễ xem trên GitHub, kiểm tra bằng text editor.
+- **Markdown** `.md`
+- **HTML** `.html`
+- **PDF** `.pdf` nếu môi trường có `weasyprint`
 
-### HTML (`.html`)
-Styled với CSS professional: dark header banner, colored tables, print-ready layout.
-Mở trong browser → Ctrl+P để in PDF.
+### Nội dung report
 
-### Report sections
-1. **Executive Summary** — tóm tắt tự động bằng ngôn ngữ tự nhiên
-2. **Alert Details** — toàn bộ fields + command line
-3. **Processing Timeline** — 7 bước với timestamp
-4. **IOC Summary** — hash/IP/process với reputation badge
-5. **Enrichment Results** — hash/IP/asset/MITRE table (link tới attack.mitre.org)
-6. **Risk Assessment** — breakdown 5 component với reasoning text
-7. **Response Actions** — bảng action + policy reasoning
-8. **Recommendations** — Immediate/Short-term/Long-term theo context
+Report hiện gồm:
+
+1. Executive Summary
+2. Alert Details
+3. Processing Timeline
+4. IOC Summary
+5. Enrichment Results
+6. Risk Assessment
+7. Response Actions
+8. Recommendations
+
+### Điểm đáng chú ý của bản hiện tại
+
+- HTML report đã được **escape dữ liệu alert-controlled** trước khi render.
+- Metadata ngoài body HTML cũng được escape, không chỉ riêng phần Markdown body.
+- Replay incident có thể materialize report còn thiếu mà không cần chạy lại toàn pipeline.
+
+### Lưu ý về PDF
+
+- Nếu chưa cài `weasyprint`, hệ thống vẫn sinh Markdown + HTML bình thường.
+- Với Windows, HTML report đủ đẹp để mở browser và `Ctrl+P` ra PDF nếu chưa muốn setup GTK runtime.
 
 ---
 
 ## 🚀 Định hướng mở rộng
 
-### Upgrade Enrichment (thay mock bằng API thật)
+### 1. Tích hợp external services thật
 
-```python
-# Thay 1 dòng, không sửa logic còn lại:
-hash_intel = VirusTotalHashIntel(api_key=os.getenv("VT_API_KEY"))
-ip_intel   = AbuseIPDBIntel(api_key=os.getenv("ABUSEIPDB_KEY"))
-asset_db   = ServiceNowCMDB(instance="company.service-now.com", ...)
-```
+Mock hiện tại hoàn toàn có thể thay bằng:
 
-### Upgrade Ticketing (TheHive thật)
+- VirusTotal API
+- AbuseIPDB API
+- CMDB thật
+- EDR isolate thật
+- firewall block thật
+- Jira / ServiceNow / TheHive
 
-```python
-# actions/ticketing.py: thêm TheHiveTicketing class
-# TheHive API: POST /api/case với thông tin từ ticket dict
-```
+### 2. Async remediation thật sự
 
-### Docker Compose
+Codebase đã có queue-ready boundary, nhưng vẫn nên bổ sung:
 
-```yaml
-# docker-compose.yml
-services:
-  soar-pipeline:
-    build: .
-    command: python main.py --scenario mixed
-  soar-dashboard:
-    build: .
-    command: streamlit run dashboard/app.py --server.port 8501
-    ports: ["8501:8501"]
-```
+- background worker
+- retry policy
+- dead-letter queue
+- delivery guarantee
 
-### SOAR Platform Integration
+### 3. Security hardening tiếp
 
-Thay Python script bằng **n8n** hoặc **Shuffle** workflow:
-- Mỗi node trong workflow = 1 bước enrichment
-- Visual pipeline editor → dễ demo hơn cho non-technical stakeholders
-- Webhook trigger từ EDR thật (CrowdStrike, SentinelOne...)
+Đợt hardening vừa qua đã fix các finding chính, nhưng nếu muốn productionize hơn nữa thì nên thêm:
+
+- rate limiting
+- immutable audit log
+- request tracing
+- token rotation / secret management
+- encryption-at-rest cho incident storage nếu chứa dữ liệu nhạy cảm thật
+
+### 4. Code quality cleanup
+
+Một việc nên làm tiếp ngay:
+
+- thay dần `datetime.utcnow()` bằng timezone-aware UTC datetime để dọn warning trên Python 3.13
+
+### 5. Dashboard automation
+
+Hiện dashboard đã smoke-load tốt, nhưng chưa có test automation riêng. Có thể bổ sung:
+
+- Playwright smoke
+- screenshot diff
+- dashboard scenario regression
 
 ---
 
-## 👤 About
+## 📚 Tài liệu nên đọc tiếp
 
-**Project type:** Blue Team / SOC CV Project  
-**Tech focus:** SOAR Automation, Threat Intelligence, MITRE ATT&CK, Python  
-**Timeline:** ~1 tháng (solo project)
+- `docs/upgrade-roadmap.md`
+- `docs/a2a-collaboration.md`
+- `docs/three-codex-team.md`
+- `docs/phase-2-persistence-schema.md`
+- `docs/phase-2-idempotency-guardrails.md`
+- `docs/phase-3-policy-queue-boundaries.md`
+- `docs/phase-6-correlation-hooks.md`
+- `docs/pentest-report-2026-07-02.md`
 
 ---
 
-*Built with ❤️ for Blue Team — SOAR Malware Playbook v1.0*
+*Built for Blue Team / SOC portfolio work — SOAR Malware Playbook v2.0*

@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Iterator
+
+import pytest
+
+import api.app as api_app
+from security import (
+    ROLE_A2A_ADMIN,
+    ROLE_A2A_AGENT,
+    ROLE_A2A_READ,
+    ROLE_INCIDENT_PROCESS,
+    ROLE_INCIDENT_READ,
+    AuthenticatedPrincipal,
+    clear_auth_cache,
+)
+
+
+@pytest.fixture(autouse=True)
+def clear_cached_services() -> Iterator[None]:
+    api_app.get_workflow_service.cache_clear()
+    api_app.get_a2a_service.cache_clear()
+    clear_auth_cache()
+    yield
+    api_app.get_workflow_service.cache_clear()
+    api_app.get_a2a_service.cache_clear()
+    clear_auth_cache()
+
+
+@pytest.fixture
+def principal_factory() -> Callable[..., AuthenticatedPrincipal]:
+    def build(
+        principal_id: str,
+        *,
+        roles: list[str] | tuple[str, ...],
+        workspaces: list[str] | tuple[str, ...] = ("*",),
+        principal_type: str = "user",
+        agent_id: str | None = None,
+    ) -> AuthenticatedPrincipal:
+        return AuthenticatedPrincipal(
+            principal_id=principal_id,
+            principal_type=principal_type,  # type: ignore[arg-type]
+            roles=frozenset(roles),
+            workspaces=frozenset(workspaces),
+            agent_id=agent_id,
+        )
+
+    return build
+
+
+@pytest.fixture
+def incident_operator_principal(principal_factory: Callable[..., AuthenticatedPrincipal]) -> AuthenticatedPrincipal:
+    return principal_factory(
+        "incident-operator",
+        roles=[ROLE_INCIDENT_PROCESS, ROLE_INCIDENT_READ],
+    )
+
+
+@pytest.fixture
+def a2a_admin_principal(principal_factory: Callable[..., AuthenticatedPrincipal]) -> AuthenticatedPrincipal:
+    return principal_factory(
+        "a2a-admin",
+        roles=[ROLE_A2A_ADMIN, ROLE_A2A_READ],
+    )
+
+
+@pytest.fixture
+def auth_token_config_factory(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[dict]], str]:
+    def install(tokens: list[dict]) -> str:
+        payload = json.dumps({"tokens": tokens})
+        monkeypatch.setenv("SOAR_AUTH_TOKENS_JSON", payload)
+        clear_auth_cache()
+        return payload
+
+    return install
+
+
+def build_default_auth_tokens() -> list[dict]:
+    return [
+        {
+            "token": "incident-process-token",
+            "principal_id": "incident-processor",
+            "principal_type": "user",
+            "roles": [ROLE_INCIDENT_PROCESS],
+            "workspaces": ["*"],
+        },
+        {
+            "token": "incident-read-token",
+            "principal_id": "incident-reader",
+            "principal_type": "user",
+            "roles": [ROLE_INCIDENT_READ],
+            "workspaces": ["*"],
+        },
+        {
+            "token": "a2a-admin-token",
+            "principal_id": "a2a-admin",
+            "principal_type": "user",
+            "roles": [ROLE_A2A_ADMIN, ROLE_A2A_READ],
+            "workspaces": ["*"],
+        },
+        {
+            "token": "leader-agent-token",
+            "principal_id": "leader-agent",
+            "principal_type": "agent",
+            "roles": [ROLE_A2A_AGENT],
+            "workspaces": ["triage-room", "pentest-room", "soc-war-room", "shared"],
+            "agent_id": "leader-agent",
+        },
+        {
+            "token": "worker-agent-token",
+            "principal_id": "worker-agent",
+            "principal_type": "agent",
+            "roles": [ROLE_A2A_AGENT],
+            "workspaces": ["triage-room", "pentest-room", "soc-war-room", "shared"],
+            "agent_id": "worker-agent",
+        },
+        {
+            "token": "ghost-agent-token",
+            "principal_id": "ghost-agent",
+            "principal_type": "agent",
+            "roles": [ROLE_A2A_AGENT],
+            "workspaces": ["triage-room", "pentest-room", "soc-war-room", "shared"],
+            "agent_id": "ghost-agent",
+        },
+    ]
