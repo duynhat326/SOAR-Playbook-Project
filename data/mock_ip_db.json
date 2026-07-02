@@ -1,0 +1,87 @@
+{
+  "_comment": "Mock IP Reputation DB — giả lập AbuseIPDB API response. Field names theo chuẩn AbuseIPDB để dễ swap.",
+  "ips": {
+    "185.220.101.45": {
+      "reputation": "malicious",
+      "confidence_score": 100,
+      "is_c2": true,
+      "country": "DE",
+      "isp": "Tor Project Exit Node",
+      "usage_type": "TOR",
+      "domain": "tor-exit.example.com",
+      "total_reports": 1247,
+      "tags": ["tor", "c2", "botnet-controller"]
+    },
+    "194.165.16.11": {
+      "reputation": "malicious",
+      "confidence_score": 95,
+      "is_c2": true,
+      "country": "RU",
+      "isp": "Selectel LLC",
+      "usage_type": "Data Center",
+      "domain": null,
+      "total_reports": 342,
+      "tags": ["c2", "ransomware-c2", "blackcat"]
+    },
+    "45.142.212.100": {
+      "reputation": "malicious",
+      "confidence_score": 88,
+      "is_c2": false,
+      "country": "NL",
+      "isp": "Serverius Holding B.V.",
+      "usage_type": "Data Center",
+      "domain": null,
+      "total_reports": 156,
+      "tags": ["phishing", "malware-distribution"]
+    },
+    "91.219.216.55": {
+      "reputation": "malicious",
+      "confidence_score": 72,
+      "is_c2": true,
+      "country": "UA",
+      "isp": "PE Freehost",
+      "usage_type": "Data Center",
+      "domain": null,
+      "total_reports": 89,
+      "tags": ["c2", "cobalt-strike"]
+    },
+    "198.51.100.10": {
+      "reputation": "clean",
+      "confidence_score": 0,
+      "is_c2": false,
+      "country": "US",
+      "isp": "Example Corp",
+      "usage_type": "Corporate",
+      "domain": "example.com",
+      "total_reports": 0,
+      "tags": []
+    },
+    "203.0.113.5": {
+      "reputation": "clean",
+      "confidence_score": 0,
+      "is_c2": false,
+      "country": "US",
+      "isp": "Documentation ISP",
+      "usage_type": "Corporate",
+      "domain": "docs.example.com",
+      "total_reports": 0,
+      "tags": []
+    },
+    "10.0.0.1": {
+      "reputation": "clean",
+      "confidence_score": 0,
+      "is_c2": false,
+      "country": "PRIVATE",
+      "isp": "Internal Network",
+      "usage_type": "Private",
+      "domain": "gateway.internal",
+      "total_reports": 0,
+      "tags": ["internal"]
+    }
+  },
+  "_meta": {
+    "source": "mock_abuseipdb",
+    "version": "1.0",
+    "note": "Swap sang AbuseIPDB API thật bằng cách thay MockIPIntel bằng AbuseIPDBIntel"
+  }
+}

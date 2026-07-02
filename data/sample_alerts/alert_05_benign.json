@@ -1,0 +1,15 @@
+{
+  "_scenario": "benign",
+  "_description": "Alert 05 — BENIGN: PowerShell script chạy backup hợp lệ. Hash clean, IP clean, host normal. Không trigger rule nào — chỉ tạo ticket LOW priority để theo dõi.",
+  "alert_id": "a5000005-0000-0000-0000-000000000005",
+  "hostname": "DESKTOP-ABC123",
+  "username": "john.doe",
+  "process_name": "powershell.exe",
+  "file_path": "C:\\scripts\\backup_daily.ps1",
+  "file_hash": "0000000000000000000000000000000000000000000000000000000000000002",
+  "parent_process": "taskschd.exe",
+  "command_line": "powershell.exe -ExecutionPolicy RemoteSigned -File C:\\scripts\\backup_daily.ps1",
+  "destination_ip": "10.0.0.1",
+  "severity": "low",
+  "detection_name": "Suspicious.Powershell.Execution"
+}

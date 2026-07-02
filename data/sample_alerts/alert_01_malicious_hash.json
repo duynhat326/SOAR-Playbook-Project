@@ -1,0 +1,15 @@
+{
+  "_scenario": "malicious_hash",
+  "_description": "Alert 01 — Hash MALICIOUS: Cobalt Strike beacon được phát hiện trên máy HR. Hash confirmed malicious bởi 65/72 vendors. Trigger Rule 1: ISOLATE HOST.",
+  "alert_id": "a1000001-0000-0000-0000-000000000001",
+  "hostname": "WS-HR-01",
+  "username": "linda.nguyen",
+  "process_name": "powershell.exe",
+  "file_path": "C:\\Users\\linda.nguyen\\AppData\\Local\\Temp\\update32.exe",
+  "file_hash": "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe",
+  "parent_process": "winword.exe",
+  "command_line": "powershell.exe -nop -w hidden -enc SGVsbG8gV29ybGQgLSBUaGlzIGlzIGEgbW9jayBlbmNvZGVkIGNvbW1hbmQ=",
+  "destination_ip": "198.51.100.10",
+  "severity": "high",
+  "detection_name": "Backdoor.Cobalt.Strike.Beacon"
+}

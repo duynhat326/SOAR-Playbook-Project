@@ -1,0 +1,86 @@
+{
+  "_comment": "Mock Asset CMDB — hostname → asset criticality và metadata. Mô phỏng CMDB thực tế của doanh nghiệp.",
+  "assets": {
+    "SRV-DC01": {
+      "criticality": "critical",
+      "asset_type": "Domain Controller",
+      "department": "IT Infrastructure",
+      "owner": "it-admin@company.com",
+      "os": "Windows Server 2022",
+      "location": "Datacenter-A",
+      "notes": "Primary Domain Controller — mất là toàn bộ AD sập"
+    },
+    "SRV-FIN01": {
+      "criticality": "critical",
+      "asset_type": "Finance Server",
+      "department": "Finance",
+      "owner": "finance-it@company.com",
+      "os": "Windows Server 2019",
+      "location": "Datacenter-A",
+      "notes": "Chứa dữ liệu tài chính nhạy cảm, kết nối banking system"
+    },
+    "SRV-DB01": {
+      "criticality": "critical",
+      "asset_type": "Database Server",
+      "department": "IT Infrastructure",
+      "owner": "dba@company.com",
+      "os": "Windows Server 2022",
+      "location": "Datacenter-B",
+      "notes": "SQL Server chính — chứa toàn bộ dữ liệu khách hàng"
+    },
+    "WS-FINANCE-01": {
+      "criticality": "critical",
+      "asset_type": "Finance Workstation",
+      "department": "Finance",
+      "owner": "cfo@company.com",
+      "os": "Windows 11 Pro",
+      "location": "HQ-Floor-3",
+      "notes": "Máy của CFO — truy cập internet banking"
+    },
+    "WS-HR-01": {
+      "criticality": "normal",
+      "asset_type": "HR Workstation",
+      "department": "Human Resources",
+      "owner": "hr-dept@company.com",
+      "os": "Windows 11 Pro",
+      "location": "HQ-Floor-2",
+      "notes": "Chứa dữ liệu nhân sự — cần theo dõi"
+    },
+    "WS-DEV-01": {
+      "criticality": "normal",
+      "asset_type": "Developer Workstation",
+      "department": "Engineering",
+      "owner": "dev-team@company.com",
+      "os": "Windows 11 Pro",
+      "location": "HQ-Floor-4",
+      "notes": "Có code repo — compromise có thể dẫn đến supply chain attack"
+    },
+    "DESKTOP-ABC123": {
+      "criticality": "low",
+      "asset_type": "General Workstation",
+      "department": "Operations",
+      "owner": "ops@company.com",
+      "os": "Windows 10 Pro",
+      "location": "HQ-Floor-1",
+      "notes": "Máy thông thường"
+    },
+    "DESKTOP-GUEST01": {
+      "criticality": "low",
+      "asset_type": "Guest Machine",
+      "department": "Facilities",
+      "owner": "facilities@company.com",
+      "os": "Windows 10 Home",
+      "location": "Meeting-Room-A",
+      "notes": "Máy phòng họp, không có dữ liệu quan trọng"
+    }
+  },
+  "_defaults": {
+    "unknown_host_criticality": "normal",
+    "note": "Hostname không có trong DB → mặc định là 'normal'. Thêm host mới vào đây khi onboard."
+  },
+  "_meta": {
+    "source": "mock_cmdb",
+    "version": "1.0",
+    "note": "Swap sang CMDB thật (ServiceNow, Lansweeper...) bằng cách thay MockAssetDB bằng CMDBAssetLookup"
+  }
+}

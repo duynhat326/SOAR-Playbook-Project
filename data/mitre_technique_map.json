@@ -1,0 +1,252 @@
+{
+  "_comment": "MITRE ATT&CK Technique Mapping — pattern trong process_name/command_line → Technique ID + Tactic. Đây là bản mapping thủ công cho demo, có thể upgrade dùng mitreattack-python library.",
+  "process_patterns": [
+    {
+      "pattern": "mimikatz",
+      "match_type": "contains",
+      "technique_id": "T1003.001",
+      "technique_name": "LSASS Memory",
+      "tactic": "Credential Access",
+      "description": "Mimikatz dump credentials từ LSASS process memory",
+      "severity_weight": 0.9
+    },
+    {
+      "pattern": "procdump",
+      "match_type": "contains",
+      "technique_id": "T1003.001",
+      "technique_name": "LSASS Memory",
+      "tactic": "Credential Access",
+      "description": "ProcDump dump LSASS memory để steal credentials",
+      "severity_weight": 0.8
+    },
+    {
+      "pattern": "wce.exe",
+      "match_type": "exact",
+      "technique_id": "T1003",
+      "technique_name": "OS Credential Dumping",
+      "tactic": "Credential Access",
+      "description": "Windows Credential Editor — dump credentials",
+      "severity_weight": 0.9
+    },
+    {
+      "pattern": "mshta.exe",
+      "match_type": "exact",
+      "technique_id": "T1218.005",
+      "technique_name": "Mshta",
+      "tactic": "Defense Evasion",
+      "description": "Lạm dụng mshta.exe để execute HTA file — bypass AppLocker",
+      "severity_weight": 0.7
+    },
+    {
+      "pattern": "regsvr32.exe",
+      "match_type": "exact",
+      "technique_id": "T1218.010",
+      "technique_name": "Regsvr32",
+      "tactic": "Defense Evasion",
+      "description": "Squiblydoo technique — execute DLL qua regsvr32 để bypass whitelist",
+      "severity_weight": 0.7
+    },
+    {
+      "pattern": "rundll32.exe",
+      "match_type": "exact",
+      "technique_id": "T1218.011",
+      "technique_name": "Rundll32",
+      "tactic": "Defense Evasion",
+      "description": "Execute DLL qua rundll32 để bypass application control",
+      "severity_weight": 0.6
+    },
+    {
+      "pattern": "certutil.exe",
+      "match_type": "exact",
+      "technique_id": "T1105",
+      "technique_name": "Ingress Tool Transfer",
+      "tactic": "Command and Control",
+      "description": "Lạm dụng certutil để download file từ internet (LOLBin)",
+      "severity_weight": 0.7
+    },
+    {
+      "pattern": "bitsadmin.exe",
+      "match_type": "exact",
+      "technique_id": "T1197",
+      "technique_name": "BITS Jobs",
+      "tactic": "Persistence",
+      "description": "Lạm dụng BITS để download và persist payload",
+      "severity_weight": 0.6
+    }
+  ],
+  "command_line_patterns": [
+    {
+      "pattern": "-enc",
+      "match_type": "contains",
+      "technique_id": "T1059.001",
+      "technique_name": "PowerShell",
+      "tactic": "Execution",
+      "description": "PowerShell với encoded command — thường dùng để obfuscate payload",
+      "severity_weight": 0.8
+    },
+    {
+      "pattern": "-EncodedCommand",
+      "match_type": "contains",
+      "technique_id": "T1059.001",
+      "technique_name": "PowerShell",
+      "tactic": "Execution",
+      "description": "PowerShell EncodedCommand flag — obfuscated execution",
+      "severity_weight": 0.8
+    },
+    {
+      "pattern": "IEX",
+      "match_type": "contains",
+      "technique_id": "T1059.001",
+      "technique_name": "PowerShell",
+      "tactic": "Execution",
+      "description": "Invoke-Expression — execute string as code, phổ biến trong fileless malware",
+      "severity_weight": 0.85
+    },
+    {
+      "pattern": "Invoke-Expression",
+      "match_type": "contains",
+      "technique_id": "T1059.001",
+      "technique_name": "PowerShell",
+      "tactic": "Execution",
+      "description": "Invoke-Expression — execute string as code",
+      "severity_weight": 0.85
+    },
+    {
+      "pattern": "DownloadString",
+      "match_type": "contains",
+      "technique_id": "T1059.001",
+      "technique_name": "PowerShell",
+      "tactic": "Execution",
+      "description": "Download và execute script trực tiếp vào memory (fileless)",
+      "severity_weight": 0.9
+    },
+    {
+      "pattern": "DownloadFile",
+      "match_type": "contains",
+      "technique_id": "T1105",
+      "technique_name": "Ingress Tool Transfer",
+      "tactic": "Command and Control",
+      "description": "Download file từ remote server",
+      "severity_weight": 0.75
+    },
+    {
+      "pattern": "cmd /c",
+      "match_type": "contains",
+      "technique_id": "T1059.003",
+      "technique_name": "Windows Command Shell",
+      "tactic": "Execution",
+      "description": "Command execution qua cmd.exe",
+      "severity_weight": 0.5
+    },
+    {
+      "pattern": "net user",
+      "match_type": "contains",
+      "technique_id": "T1136.001",
+      "technique_name": "Local Account",
+      "tactic": "Persistence",
+      "description": "Tạo hoặc enumerate local user accounts",
+      "severity_weight": 0.7
+    },
+    {
+      "pattern": "net localgroup administrators",
+      "match_type": "contains",
+      "technique_id": "T1098",
+      "technique_name": "Account Manipulation",
+      "tactic": "Persistence",
+      "description": "Thêm user vào Administrators group — privilege escalation",
+      "severity_weight": 0.9
+    },
+    {
+      "pattern": "vssadmin delete shadows",
+      "match_type": "contains",
+      "technique_id": "T1490",
+      "technique_name": "Inhibit System Recovery",
+      "tactic": "Impact",
+      "description": "Xóa Volume Shadow Copies — dấu hiệu ransomware chuẩn bị encrypt",
+      "severity_weight": 1.0
+    },
+    {
+      "pattern": "wmic shadowcopy delete",
+      "match_type": "contains",
+      "technique_id": "T1490",
+      "technique_name": "Inhibit System Recovery",
+      "tactic": "Impact",
+      "description": "Xóa shadow copies qua WMIC — ransomware pre-encryption step",
+      "severity_weight": 1.0
+    },
+    {
+      "pattern": "sc create",
+      "match_type": "contains",
+      "technique_id": "T1543.003",
+      "technique_name": "Windows Service",
+      "tactic": "Persistence",
+      "description": "Tạo Windows service mới để duy trì persistence",
+      "severity_weight": 0.75
+    },
+    {
+      "pattern": "schtasks /create",
+      "match_type": "contains",
+      "technique_id": "T1053.005",
+      "technique_name": "Scheduled Task",
+      "tactic": "Persistence",
+      "description": "Tạo scheduled task để persistence",
+      "severity_weight": 0.7
+    },
+    {
+      "pattern": "-nop -w hidden",
+      "match_type": "contains",
+      "technique_id": "T1059.001",
+      "technique_name": "PowerShell",
+      "tactic": "Defense Evasion",
+      "description": "PowerShell chạy ẩn, no-profile — phổ biến trong Cobalt Strike stager",
+      "severity_weight": 0.85
+    },
+    {
+      "pattern": "bypass",
+      "match_type": "contains",
+      "technique_id": "T1059.001",
+      "technique_name": "PowerShell",
+      "tactic": "Defense Evasion",
+      "description": "ExecutionPolicy Bypass — bỏ qua restriction của PowerShell",
+      "severity_weight": 0.8
+    },
+    {
+      "pattern": "-decode",
+      "match_type": "contains",
+      "technique_id": "T1140",
+      "technique_name": "Deobfuscate/Decode Files or Information",
+      "tactic": "Defense Evasion",
+      "description": "Decode payload — thường certutil -decode",
+      "severity_weight": 0.7
+    }
+  ],
+  "dangerous_processes": [
+    "mimikatz.exe",
+    "mimikatz64.exe",
+    "wce.exe",
+    "pwdump.exe",
+    "fgdump.exe",
+    "gsecdump.exe",
+    "procdump.exe",
+    "lsass.exe_dump",
+    "cobaltstrike.exe",
+    "beacon.exe",
+    "metasploit.exe",
+    "meterpreter.exe",
+    "nc.exe",
+    "ncat.exe",
+    "netcat.exe",
+    "psexec.exe",
+    "psexesvc.exe",
+    "wmiexec.py",
+    "crackmapexec.exe",
+    "empire.exe",
+    "covenant.exe"
+  ],
+  "_meta": {
+    "source": "manual_mapping",
+    "framework_version": "ATT&CK v15",
+    "version": "1.0",
+    "note": "Upgrade bằng mitreattack-python library để dùng dữ liệu ATT&CK chính thức"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "_scenario": "critical_asset",
+  "_description": "Alert 03 — Critical Asset: Suspicious PowerShell chạy trên Domain Controller SRV-DC01. Asset criticality=CRITICAL. Trigger Rule 3: ESCALATE.",
+  "alert_id": "a3000003-0000-0000-0000-000000000003",
+  "hostname": "SRV-DC01",
+  "username": "SYSTEM",
+  "process_name": "powershell.exe",
+  "file_path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  "file_hash": "f00dbabef00dbabef00dbabef00dbabef00dbabef00dbabef00dbabef00dbabe",
+  "parent_process": "svchost.exe",
+  "command_line": "powershell.exe -ExecutionPolicy Bypass -enc SGVsbG8gV29ybGQ=",
+  "destination_ip": "203.0.113.5",
+  "severity": "medium",
+  "detection_name": "Suspicious.Powershell.Execution.OnDC"
+}
