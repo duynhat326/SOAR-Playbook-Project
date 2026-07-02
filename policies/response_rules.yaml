@@ -1,0 +1,62 @@
+version: 1
+execution:
+  mode: sync
+  queue:
+    queue_name: policy-actions
+    correlation_prefix: policy
+    fallback_to_sync: true
+    correlation_fields:
+      - hostname
+      - username
+      - file_hash
+      - destination_ip
+rules:
+  - rule_id: rule_1_hash_malicious
+    label: Rule 1
+    enabled: true
+    condition_label: Hash MALICIOUS?
+    condition_type: hash_reputation_equals
+    action: isolate_host
+    matches:
+      value: malicious
+    messages:
+      skipped: "Rule 1 [SKIP]: Hash enrichment không có dữ liệu."
+      passed: "Rule 1 [PASS]: Hash reputation = {hash_reputation} → no action"
+      triggered: "Rule 1 [TRIGGERED]: Hash MALICIOUS ({hash_vendor_ratio} vendors) → Threat: '{hash_threat}' → ACTION: ISOLATE_HOST"
+      disabled: "Rule 1 [DISABLED]: Hash malicious auto-isolation đang tắt."
+  - rule_id: rule_2_dangerous_process
+    label: Rule 2
+    enabled: true
+    condition_label: Dangerous process blacklist?
+    condition_type: dangerous_process_blacklist
+    action: kill_process
+    messages:
+      passed: "Rule 2 [PASS]: Process '{process_name}' không trong blacklist → no action"
+      triggered: "Rule 2 [TRIGGERED]: Process '{process_name}' nằm trong dangerous process blacklist (MITRE ATT&CK mapped) → ACTION: KILL_PROCESS"
+      disabled: "Rule 2 [DISABLED]: Dangerous process auto-kill đang tắt."
+  - rule_id: rule_3_critical_asset
+    label: Rule 3
+    enabled: true
+    condition_label: Asset CRITICAL?
+    condition_type: asset_criticality_equals
+    action: escalate
+    matches:
+      value: critical
+    messages:
+      passed: "Rule 3 [PASS]: Asset criticality = {asset_criticality} (not critical) → no action"
+      triggered: "Rule 3 [TRIGGERED]: Host '{hostname}' có criticality = CRITICAL (high-value asset) → ACTION: ESCALATE"
+      disabled: "Rule 3 [DISABLED]: Critical asset auto-escalation đang tắt."
+  - rule_id: rule_4_c2_ip
+    label: Rule 4
+    enabled: true
+    condition_label: IP is C2?
+    condition_type: ip_is_c2
+    action: block_ip
+    matches:
+      value: true
+    messages:
+      skipped: "Rule 4 [SKIP]: IP enrichment không có dữ liệu."
+      passed: "Rule 4 [PASS]: IP '{destination_ip}' reputation = {ip_reputation} → no action"
+      partial: "Rule 4 [PARTIAL]: IP '{destination_ip}' là MALICIOUS nhưng chưa xác nhận C2 (confidence={ip_confidence}) → no auto-block, SOC review needed"
+      triggered: "Rule 4 [TRIGGERED]: IP '{destination_ip}' được gắn cờ C2 (confidence={ip_confidence}/100) → ACTION: BLOCK_IP"
+      disabled: "Rule 4 [DISABLED]: C2 auto-block đang tắt."

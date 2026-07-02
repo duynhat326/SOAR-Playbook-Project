@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from engine.policy_engine import PolicyEngine
 from enrichment.pipeline import EnrichmentPipeline
@@ -113,4 +113,33 @@ class SoarWorkflowService:
             generate_report=generate_report,
             export_pdf=export_pdf,
             include_markdown_content=include_markdown_content,
+        )
+
+    def get_incident_by_alert_id(self, alert_id: str) -> Optional[dict[str, Any]]:
+        if self._repository is None:
+            raise RuntimeError("Persistence is disabled for this workflow service.")
+        return self._repository.get_incident_by_alert_id(alert_id)
+
+    def get_incident_by_ticket_id(self, ticket_id: str) -> Optional[dict[str, Any]]:
+        if self._repository is None:
+            raise RuntimeError("Persistence is disabled for this workflow service.")
+        return self._repository.get_incident_by_ticket_id(ticket_id)
+
+    def list_incidents(
+        self,
+        limit: int = 100,
+        *,
+        status: Optional[str] = None,
+        risk_level: Optional[str] = None,
+        hostname: Optional[str] = None,
+        ticket_id: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if self._repository is None:
+            raise RuntimeError("Persistence is disabled for this workflow service.")
+        return self._repository.list_incidents(
+            limit=limit,
+            status=status,
+            risk_level=risk_level,
+            hostname=hostname,
+            ticket_id=ticket_id,
         )

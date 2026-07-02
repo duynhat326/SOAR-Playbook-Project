@@ -108,12 +108,12 @@ Muc tieu:
 
 Cong viec:
 
-- [ ] tao `policies/response_rules.yaml`
-- [ ] dinh nghia schema cho rule
-- [ ] viet policy loader + validator
-- [ ] doi `engine/policy_engine.py` sang evaluate theo rule config
+- [x] tao `policies/response_rules.yaml`
+- [x] dinh nghia schema cho rule
+- [x] viet policy loader + validator
+- [x] doi `engine/policy_engine.py` sang evaluate theo rule config
 - [ ] ho tro severity threshold, asset threshold, allowlist, denylist
-- [ ] them fallback khi file policy loi
+- [x] them fallback khi file policy loi
 
 Tieu chi hoan thanh:
 

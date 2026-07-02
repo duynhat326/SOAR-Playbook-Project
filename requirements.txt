@@ -31,3 +31,4 @@ pytest-cov>=5.0.0         # Coverage report
 
 # --- Utilities ---
 python-dateutil>=2.9.0    # Date/time parsing tiện lợi
+PyYAML>=6.0.0             # Policy-as-data: load rule config từ YAML

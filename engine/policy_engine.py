@@ -3,26 +3,14 @@ engine/policy_engine.py
 =======================
 Policy Engine — áp dụng response policy và thực thi actions.
 
-Đây là bước 7 (bước cuối) trong workflow SOAR.
-
-4 Rule gốc (từ spec mục 4, KHÔNG thay đổi):
-  Rule 1: Hash malicious         → Isolate host
-  Rule 2: Process nguy hiểm      → Kill process
-  Rule 3: Asset criticality = critical → Escalate (High severity)
-  Rule 4: IP đích gắn cờ C2     → Block IP
-
-Ngoài ra luôn chạy (unconditional):
-  - Create ticket (mọi alert đều tạo ticket)
-  - Notify SOC   (mọi alert đều notify, level tùy risk)
-
-Thiết kế:
-  - Mỗi rule là 1 method riêng → dễ add/remove/modify rule
-  - Rule có thể override nhau (policy precedence)
-  - Trả về IncidentResponse đầy đủ với reasoning giải thích
+Phase 3 chuyển 4 remediation rules sang file config bên ngoài để
+cho phép bật/tắt hoặc chỉnh logic theo dữ liệu thay vì sửa code.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Tuple
+from pathlib import Path
+from typing import Optional
 
 from loguru import logger
 from rich.console import Console
@@ -35,17 +23,35 @@ import actions.kill_process as kill_process_action
 import actions.notify_soc as notify_soc_action
 import actions.ticketing as ticketing_action
 from enrichment.mitre_mapping import MITREMapper
+from engine.action_dispatcher import ActionDispatcher, QueuePublisher
+from engine.policy_loader import (
+    PolicyConditionType,
+    PolicyConfig,
+    PolicyExecutionMode,
+    PolicyRule,
+    load_policy_config,
+)
 from schemas.alert import (
     ActionResult,
-    AssetCriticality,
     EnrichedAlert,
-    HashReputation,
     IPReputation,
     IncidentResponse,
     ResponseAction,
 )
 
 console = Console()
+
+
+@dataclass
+class RuleEvaluation:
+    rule: PolicyRule
+    status: str
+    reasoning: str
+    triggered_action: Optional[ResponseAction] = None
+
+    @property
+    def is_triggered(self) -> bool:
+        return self.status == "triggered" and self.triggered_action is not None
 
 
 class PolicyEngine:
@@ -61,9 +67,18 @@ class PolicyEngine:
         self,
         mitre_mapper: MITREMapper = None,
         verbose: bool = True,
-    ):
+        policy_config_path: Optional[Path] = None,
+        policy_config: Optional[PolicyConfig] = None,
+        queue_publisher: QueuePublisher | None = None,
+    ) -> None:
         self._mitre_mapper = mitre_mapper or MITREMapper()
         self._verbose = verbose
+        self._policy_config = policy_config or load_policy_config(policy_config_path)
+        self._action_dispatcher = ActionDispatcher(
+            config=self._policy_config.execution,
+            action_executor=self._execute_action,
+            queue_publisher=queue_publisher,
+        )
 
     def evaluate(self, enriched: EnrichedAlert) -> IncidentResponse:
         """
@@ -95,25 +110,24 @@ class PolicyEngine:
             ))
 
         # ── Phase 1: Evaluate all rules ───────────────────────────────
-        triggered_actions: List[ResponseAction] = []
-        reasoning: List[str] = []
+        triggered_actions: list[ResponseAction] = []
+        reasoning: list[str] = []
+        evaluations: list[RuleEvaluation] = []
 
-        self._rule_1_hash_malicious(enriched, triggered_actions, reasoning)
-        self._rule_2_dangerous_process(enriched, triggered_actions, reasoning)
-        self._rule_3_critical_asset(enriched, triggered_actions, reasoning)
-        self._rule_4_c2_ip(enriched, triggered_actions, reasoning)
+        for rule in self._policy_config.rules:
+            evaluation = self._evaluate_rule(rule, enriched)
+            evaluations.append(evaluation)
+            reasoning.append(evaluation.reasoning)
+            if evaluation.is_triggered and evaluation.triggered_action not in triggered_actions:
+                triggered_actions.append(evaluation.triggered_action)
 
         # ── Phase 2: In kết quả evaluation ───────────────────────────
         if self._verbose:
-            self._print_evaluation_table(triggered_actions, reasoning, enriched)
+            self._print_evaluation_table(evaluations)
 
         # ── Phase 3: Execute actions ──────────────────────────────────
-        action_results: List[ActionResult] = []
-
-        for action in triggered_actions:
-            result = self._execute_action(action, enriched)
-            if result:
-                action_results.append(result)
+        dispatch_outcome = self._action_dispatcher.dispatch(triggered_actions, enriched)
+        action_results: list[ActionResult] = list(dispatch_outcome.action_results)
 
         # ── Phase 4: Unconditional — Ticket + Notify SOC ──────────────
         action_names = [a.value for a in triggered_actions]
@@ -146,6 +160,7 @@ class PolicyEngine:
             action_results=action_results,
             ticket_id=ticket_id,
             completed_at=datetime.utcnow(),
+            execution_trace=dispatch_outcome.execution_trace,
         )
 
         if self._verbose:
@@ -154,144 +169,173 @@ class PolicyEngine:
         return response
 
     # ──────────────────────────────────────────────────────────────────
-    # Rule definitions — mỗi rule 1 method riêng để dễ đọc/test
+    # Rule evaluation
     # ──────────────────────────────────────────────────────────────────
 
-    def _rule_1_hash_malicious(
+    def _evaluate_rule(self, rule: PolicyRule, enriched: EnrichedAlert) -> RuleEvaluation:
+        logger.debug(f"[PolicyEngine] Evaluating {rule.label}: {rule.condition_label}")
+        context = self._build_context(enriched, rule)
+
+        if not rule.enabled:
+            return RuleEvaluation(
+                rule=rule,
+                status="disabled",
+                reasoning=self._render_message(rule.messages.disabled, context),
+            )
+
+        evaluator_map = {
+            PolicyConditionType.HASH_REPUTATION_EQUALS: self._eval_hash_reputation,
+            PolicyConditionType.DANGEROUS_PROCESS_BLACKLIST: self._eval_dangerous_process,
+            PolicyConditionType.ASSET_CRITICALITY_EQUALS: self._eval_asset_criticality,
+            PolicyConditionType.IP_IS_C2: self._eval_ip_is_c2,
+        }
+        evaluator = evaluator_map.get(rule.condition_type)
+        if evaluator is None:
+            logger.warning(f"[PolicyEngine] Unsupported condition_type='{rule.condition_type}'")
+            return RuleEvaluation(
+                rule=rule,
+                status="disabled",
+                reasoning=f"{rule.label} [DISABLED]: Unsupported condition_type '{rule.condition_type}'.",
+            )
+        return evaluator(rule, enriched, context)
+
+    def _eval_hash_reputation(
         self,
+        rule: PolicyRule,
         enriched: EnrichedAlert,
-        actions: List[ResponseAction],
-        reasoning: List[str],
-    ) -> None:
-        """
-        Rule 1: Nếu hash được đánh giá là MALICIOUS → Isolate host.
-
-        Đây là rule nghiêm trọng nhất: hash malicious = confirmed malware,
-        cần isolate ngay để ngăn lateral movement.
-        """
-        logger.debug("[PolicyEngine] Evaluating Rule 1: Hash malicious?")
-
+        context: dict[str, object],
+    ) -> RuleEvaluation:
         if enriched.hash_enrichment is None:
-            reasoning.append("Rule 1 [SKIP]: Hash enrichment không có dữ liệu.")
-            return
-
-        if enriched.hash_enrichment.reputation == HashReputation.MALICIOUS:
-            threat = enriched.hash_enrichment.threat_name or "Unknown threat"
-            vendors = (f"{enriched.hash_enrichment.malicious_vendors}/"
-                       f"{enriched.hash_enrichment.total_vendors}")
-            actions.append(ResponseAction.ISOLATE_HOST)
-            reasoning.append(
-                f"Rule 1 [TRIGGERED]: Hash MALICIOUS ({vendors} vendors) → "
-                f"Threat: '{threat}' → ACTION: ISOLATE_HOST"
-            )
-            logger.info("[PolicyEngine] Rule 1 TRIGGERED → ISOLATE_HOST")
-        else:
-            reasoning.append(
-                f"Rule 1 [PASS]: Hash reputation = "
-                f"{enriched.hash_enrichment.reputation.value} → no action"
+            return RuleEvaluation(
+                rule=rule,
+                status="skipped",
+                reasoning=self._render_message(rule.messages.skipped, context),
             )
 
-    def _rule_2_dangerous_process(
+        expected = str(rule.matches.get("value", "")).lower()
+        actual = enriched.hash_enrichment.reputation.value
+        if actual == expected:
+            return RuleEvaluation(
+                rule=rule,
+                status="triggered",
+                triggered_action=rule.action,
+                reasoning=self._render_message(rule.messages.triggered, context),
+            )
+        return RuleEvaluation(
+            rule=rule,
+            status="passed",
+            reasoning=self._render_message(rule.messages.passed, context),
+        )
+
+    def _eval_dangerous_process(
         self,
+        rule: PolicyRule,
         enriched: EnrichedAlert,
-        actions: List[ResponseAction],
-        reasoning: List[str],
-    ) -> None:
-        """
-        Rule 2: Nếu process_name nằm trong dangerous process blacklist → Kill process.
-
-        Các process như mimikatz, psexec, nc.exe... không bao giờ nên
-        chạy trên production host → kill ngay không cần hỏi.
-        """
-        logger.debug("[PolicyEngine] Evaluating Rule 2: Dangerous process?")
-
+        context: dict[str, object],
+    ) -> RuleEvaluation:
         process = enriched.original_alert.process_name
         if self._mitre_mapper.is_dangerous_process(process):
-            actions.append(ResponseAction.KILL_PROCESS)
-            reasoning.append(
-                f"Rule 2 [TRIGGERED]: Process '{process}' nằm trong "
-                f"dangerous process blacklist (MITRE ATT&CK mapped) → "
-                f"ACTION: KILL_PROCESS"
+            return RuleEvaluation(
+                rule=rule,
+                status="triggered",
+                triggered_action=rule.action,
+                reasoning=self._render_message(rule.messages.triggered, context),
             )
-            logger.info(f"[PolicyEngine] Rule 2 TRIGGERED → KILL_PROCESS ({process})")
-        else:
-            reasoning.append(
-                f"Rule 2 [PASS]: Process '{process}' không trong blacklist → no action"
-            )
+        return RuleEvaluation(
+            rule=rule,
+            status="passed",
+            reasoning=self._render_message(rule.messages.passed, context),
+        )
 
-    def _rule_3_critical_asset(
+    def _eval_asset_criticality(
         self,
+        rule: PolicyRule,
         enriched: EnrichedAlert,
-        actions: List[ResponseAction],
-        reasoning: List[str],
-    ) -> None:
-        """
-        Rule 3: Nếu asset criticality = CRITICAL → Escalate.
-
-        Host critical (Domain Controller, Finance Server...) bị compromise
-        là incident nghiêm trọng → cần escalate lên cấp cao hơn.
-        """
-        logger.debug("[PolicyEngine] Evaluating Rule 3: Critical asset?")
-
-        if enriched.asset_criticality == AssetCriticality.CRITICAL:
-            actions.append(ResponseAction.ESCALATE)
-            reasoning.append(
-                f"Rule 3 [TRIGGERED]: Host '{enriched.original_alert.hostname}' "
-                f"có criticality = CRITICAL (high-value asset) → "
-                f"ACTION: ESCALATE"
+        context: dict[str, object],
+    ) -> RuleEvaluation:
+        expected = str(rule.matches.get("value", "")).lower()
+        actual = enriched.asset_criticality.value
+        if actual == expected:
+            return RuleEvaluation(
+                rule=rule,
+                status="triggered",
+                triggered_action=rule.action,
+                reasoning=self._render_message(rule.messages.triggered, context),
             )
-            logger.info(
-                f"[PolicyEngine] Rule 3 TRIGGERED → ESCALATE "
-                f"(host={enriched.original_alert.hostname})"
-            )
-        else:
-            reasoning.append(
-                f"Rule 3 [PASS]: Asset criticality = "
-                f"{enriched.asset_criticality.value} (not critical) → no action"
-            )
+        return RuleEvaluation(
+            rule=rule,
+            status="passed",
+            reasoning=self._render_message(rule.messages.passed, context),
+        )
 
-    def _rule_4_c2_ip(
+    def _eval_ip_is_c2(
         self,
+        rule: PolicyRule,
         enriched: EnrichedAlert,
-        actions: List[ResponseAction],
-        reasoning: List[str],
-    ) -> None:
-        """
-        Rule 4: Nếu destination_ip được gắn cờ C2 → Block IP.
-
-        Kết nối tới C2 server = active infection hoặc beaconing.
-        Block ngay trên firewall để cắt kênh điều khiển.
-        """
-        logger.debug("[PolicyEngine] Evaluating Rule 4: C2 IP?")
-
+        context: dict[str, object],
+    ) -> RuleEvaluation:
         if enriched.ip_enrichment is None:
-            reasoning.append("Rule 4 [SKIP]: IP enrichment không có dữ liệu.")
-            return
+            return RuleEvaluation(
+                rule=rule,
+                status="skipped",
+                reasoning=self._render_message(rule.messages.skipped, context),
+            )
 
-        ip = enriched.original_alert.destination_ip
-        if enriched.ip_enrichment.is_c2:
-            confidence = enriched.ip_enrichment.confidence_score
-            actions.append(ResponseAction.BLOCK_IP)
-            reasoning.append(
-                f"Rule 4 [TRIGGERED]: IP '{ip}' được gắn cờ C2 "
-                f"(confidence={confidence}/100) → ACTION: BLOCK_IP"
+        expected = bool(rule.matches.get("value", True))
+        actual = enriched.ip_enrichment.is_c2
+        if actual == expected:
+            return RuleEvaluation(
+                rule=rule,
+                status="triggered",
+                triggered_action=rule.action,
+                reasoning=self._render_message(rule.messages.triggered, context),
             )
-            logger.info(
-                f"[PolicyEngine] Rule 4 TRIGGERED → BLOCK_IP ({ip})"
+        if enriched.ip_enrichment.reputation == IPReputation.MALICIOUS and rule.messages.partial:
+            return RuleEvaluation(
+                rule=rule,
+                status="partial",
+                reasoning=self._render_message(rule.messages.partial, context),
             )
-        elif enriched.ip_enrichment.reputation == IPReputation.MALICIOUS:
-            # Malicious nhưng không phải C2 → không block tự động,
-            # chỉ ghi vào reasoning để SOC review
-            reasoning.append(
-                f"Rule 4 [PARTIAL]: IP '{ip}' là MALICIOUS nhưng chưa xác nhận C2 "
-                f"(confidence={enriched.ip_enrichment.confidence_score}) → "
-                f"no auto-block, SOC review needed"
-            )
-        else:
-            reasoning.append(
-                f"Rule 4 [PASS]: IP '{ip}' reputation = "
-                f"{enriched.ip_enrichment.reputation.value} → no action"
-            )
+        return RuleEvaluation(
+            rule=rule,
+            status="passed",
+            reasoning=self._render_message(rule.messages.passed, context),
+        )
+
+    @staticmethod
+    def _render_message(template: Optional[str], context: dict[str, object]) -> str:
+        if not template:
+            return ""
+        return template.format(**context)
+
+    def _build_context(
+        self,
+        enriched: EnrichedAlert,
+        rule: PolicyRule,
+    ) -> dict[str, object]:
+        alert = enriched.original_alert
+        hash_result = enriched.hash_enrichment
+        ip_result = enriched.ip_enrichment
+        return {
+            "rule_id": rule.rule_id,
+            "rule_label": rule.label,
+            "hostname": alert.hostname,
+            "process_name": alert.process_name,
+            "destination_ip": alert.destination_ip,
+            "hash_reputation": hash_result.reputation.value if hash_result else "unknown",
+            "hash_vendor_ratio": (
+                f"{hash_result.malicious_vendors}/{hash_result.total_vendors}"
+                if hash_result else "0/0"
+            ),
+            "hash_threat": (
+                hash_result.threat_name or "Unknown threat"
+                if hash_result else "Unknown threat"
+            ),
+            "asset_criticality": enriched.asset_criticality.value,
+            "ip_reputation": ip_result.reputation.value if ip_result else "unknown",
+            "ip_confidence": ip_result.confidence_score if ip_result else 0,
+            "action": rule.action.value,
+        }
 
     # ──────────────────────────────────────────────────────────────────
     # Action executor — dispatch từng action type
@@ -364,11 +408,9 @@ class PolicyEngine:
 
     def _print_evaluation_table(
         self,
-        triggered: List[ResponseAction],
-        reasoning: List[str],
-        enriched: EnrichedAlert,
+        evaluations: list[RuleEvaluation],
     ) -> None:
-        """In bảng tóm tắt kết quả evaluation 4 rules."""
+        """In bảng tóm tắt kết quả evaluation của rule config."""
         table = Table(
             title="Policy Evaluation Results",
             show_header=True,
@@ -379,28 +421,40 @@ class PolicyEngine:
         table.add_column("Result", width=10)
         table.add_column("Action", width=18)
 
-        rules_info = [
-            ("Rule 1", "Hash MALICIOUS?",             ResponseAction.ISOLATE_HOST),
-            ("Rule 2", "Dangerous process blacklist?", ResponseAction.KILL_PROCESS),
-            ("Rule 3", "Asset CRITICAL?",             ResponseAction.ESCALATE),
-            ("Rule 4", "IP is C2?",                   ResponseAction.BLOCK_IP),
-        ]
+        status_map = {
+            "triggered": "[red]TRIGGERED[/red]",
+            "passed": "[green]PASS[/green]",
+            "partial": "[yellow]PARTIAL[/yellow]",
+            "skipped": "[dim]SKIP[/dim]",
+            "disabled": "[dim]DISABLED[/dim]",
+        }
 
-        for rule_label, condition, action in rules_info:
-            fired = action in triggered
-            status = "[green]PASS[/green]" if not fired else "[red]TRIGGERED[/red]"
-            action_text = (
-                f"[red]{action.value}[/red]" if fired
-                else "[dim]—[/dim]"
+        triggered_actions = []
+        for evaluation in evaluations:
+            if evaluation.is_triggered:
+                triggered_actions.append(evaluation.triggered_action)
+            table.add_row(
+                evaluation.rule.label,
+                evaluation.rule.condition_label,
+                status_map.get(evaluation.status, evaluation.status.upper()),
+                (
+                    f"[red]{evaluation.rule.action.value}[/red]"
+                    if evaluation.is_triggered
+                    else "[dim]—[/dim]"
+                ),
             )
-            table.add_row(rule_label, condition, status, action_text)
 
         console.print(table)
 
-        if triggered:
+        if triggered_actions:
+            verb = (
+                "Queueing"
+                if self._policy_config.execution.mode == PolicyExecutionMode.QUEUED
+                else "Executing"
+            )
             console.print(
-                f"\n[bold red]⚡ {len(triggered)} rule(s) triggered → "
-                f"Executing: {', '.join(a.value for a in triggered)}[/bold red]"
+                f"\n[bold red]⚡ {len(triggered_actions)} rule(s) triggered → "
+                f"{verb}: {', '.join(a.value for a in triggered_actions)}[/bold red]"
             )
         else:
             console.print("\n[bold green]✓ No rules triggered — no automated action[/bold green]")

@@ -22,7 +22,10 @@ Triết lý:
 import pytest
 from datetime import datetime
 
+import yaml
+
 from engine.policy_engine import PolicyEngine
+from engine.policy_loader import DEFAULT_POLICY_CONFIG
 from schemas.alert import (
     AssetCriticality,
     EnrichedAlert,
@@ -443,3 +446,155 @@ def test_policy_reasoning_populated(engine):
     assert len(response.policy_reasoning) >= 4, (
         f"Phải có ít nhất 4 reasoning entries, got {len(response.policy_reasoning)}"
     )
+
+
+def test_policy_config_can_disable_specific_rule(tmp_path):
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["rules"][0]["enabled"] = False
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    engine = PolicyEngine(verbose=False, policy_config_path=config_path)
+    alert = make_alert(severity=Severity.HIGH)
+    enriched = make_enriched(
+        alert,
+        hash_reputation=HashReputation.MALICIOUS,
+        hash_malicious_vendors=58,
+        hash_threat_name="Trojan.GenericKD.48756123",
+        risk_score=72.0,
+        risk_level="high",
+    )
+
+    response = engine.evaluate(enriched)
+
+    assert ResponseAction.ISOLATE_HOST not in response.triggered_actions
+    assert any("[DISABLED]" in reason for reason in response.policy_reasoning)
+
+
+def test_queue_mode_without_publisher_falls_back_to_sync(tmp_path):
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["execution"]["mode"] = "queued"
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    engine = PolicyEngine(verbose=False, policy_config_path=config_path)
+    alert = make_alert(severity=Severity.HIGH)
+    enriched = make_enriched(
+        alert,
+        hash_reputation=HashReputation.MALICIOUS,
+        hash_malicious_vendors=58,
+        hash_threat_name="Trojan.GenericKD.48756123",
+        risk_score=72.0,
+        risk_level="high",
+    )
+
+    response = engine.evaluate(enriched)
+
+    isolate_result = next(
+        result for result in response.action_results if result.action == ResponseAction.ISOLATE_HOST
+    )
+    assert isolate_result.status == "success"
+    assert response.execution_trace.configured_mode == "queued"
+    assert response.execution_trace.effective_mode == "sync_fallback"
+    assert response.execution_trace.queue_name == "policy-actions"
+    assert response.execution_trace.fallback_reason is not None
+    assert response.execution_trace.queued_actions[0].correlation_id.endswith(":isolate_host")
+    assert [hook.field for hook in response.execution_trace.queued_actions[0].correlation_hooks] == [
+        "hostname",
+        "username",
+        "file_hash",
+        "destination_ip",
+    ]
+
+
+def test_queue_mode_with_publisher_queues_remediation_actions(tmp_path):
+    class MemoryPublisher:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def publish(self, request) -> None:
+            self.requests.append(request)
+
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["execution"]["mode"] = "queued"
+    config_data["execution"]["queue"]["queue_name"] = "remediation-jobs"
+    config_data["execution"]["queue"]["correlation_prefix"] = "incident"
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    publisher = MemoryPublisher()
+    engine = PolicyEngine(
+        verbose=False,
+        policy_config_path=config_path,
+        queue_publisher=publisher,
+    )
+    alert = make_alert(severity=Severity.HIGH)
+    enriched = make_enriched(
+        alert,
+        hash_reputation=HashReputation.MALICIOUS,
+        hash_malicious_vendors=58,
+        hash_threat_name="Trojan.GenericKD.48756123",
+        risk_score=72.0,
+        risk_level="high",
+    )
+
+    response = engine.evaluate(enriched)
+
+    isolate_result = next(
+        result for result in response.action_results if result.action == ResponseAction.ISOLATE_HOST
+    )
+    assert isolate_result.status == "queued"
+    assert ResponseAction.CREATE_TICKET in response.triggered_actions
+    assert response.execution_trace.effective_mode == "queued"
+    assert response.execution_trace.queue_name == "remediation-jobs"
+    assert len(response.execution_trace.queued_actions) == 1
+    assert publisher.requests[0].queue_name == "remediation-jobs"
+    assert publisher.requests[0].correlation_id == "incident:test-alert-uuid-001:isolate_host"
+    assert [(hook.field, hook.value) for hook in publisher.requests[0].correlation_hooks] == [
+        ("hostname", "DESKTOP-ABC123"),
+        ("username", "test.user"),
+        ("file_hash", "0" * 64),
+        ("destination_ip", "198.51.100.10"),
+    ]
+
+
+def test_queue_mode_respects_configured_correlation_fields(tmp_path):
+    class MemoryPublisher:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def publish(self, request) -> None:
+            self.requests.append(request)
+
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["execution"]["mode"] = "queued"
+    config_data["execution"]["queue"]["correlation_fields"] = ["file_hash", "destination_ip"]
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    publisher = MemoryPublisher()
+    engine = PolicyEngine(
+        verbose=False,
+        policy_config_path=config_path,
+        queue_publisher=publisher,
+    )
+    alert = make_alert(destination_ip="203.0.113.45")
+    enriched = make_enriched(
+        alert,
+        hash_reputation=HashReputation.MALICIOUS,
+        hash_malicious_vendors=10,
+        risk_score=55.0,
+        risk_level="medium",
+    )
+
+    response = engine.evaluate(enriched)
+
+    assert response.execution_trace.effective_mode == "queued"
+    assert [hook.field for hook in publisher.requests[0].correlation_hooks] == [
+        "file_hash",
+        "destination_ip",
+    ]
+    assert [(hook.field, hook.value) for hook in response.execution_trace.queued_actions[0].correlation_hooks] == [
+        ("file_hash", "0" * 64),
+        ("destination_ip", "203.0.113.45"),
+    ]

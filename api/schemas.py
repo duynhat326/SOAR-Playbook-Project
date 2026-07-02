@@ -61,3 +61,48 @@ class ProcessIncidentResponse(BaseModel):
             response=result.response,
             report=ReportArtifactsResponse.from_workflow_result(result),
         )
+
+
+class IncidentActionResultResponse(BaseModel):
+    action: str
+    status: str
+    executed_at: str
+    details: str
+
+
+class StoredReportResponse(ReportArtifactsResponse):
+    markdown_content: Optional[str] = None
+
+
+class IncidentSummaryResponse(BaseModel):
+    id: int
+    alert_id: str
+    hostname: str
+    detection_name: str
+    risk_score: float
+    risk_level: str
+    ticket_id: Optional[str] = None
+    status: str
+    completed_at: str
+    report_path: Optional[str] = None
+
+
+class IncidentRecordResponse(BaseModel):
+    id: int
+    alert_id: str
+    hostname: str
+    detection_name: str
+    risk_score: float
+    risk_level: str
+    ticket_id: Optional[str] = None
+    status: str
+    completed_at: str
+    report_path: Optional[str] = None
+    triggered_actions: list[str] = Field(default_factory=list)
+    policy_reasoning: list[str] = Field(default_factory=list)
+    action_results: list[IncidentActionResultResponse] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+    alert: MalwareAlert
+    response: IncidentResponse
+    report: StoredReportResponse

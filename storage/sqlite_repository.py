@@ -93,6 +93,9 @@ class SQLiteIncidentRepository:
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE CASCADE
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_incidents_ticket_id
+                ON incidents(ticket_id);
                 """
             )
 
@@ -251,9 +254,25 @@ class SQLiteIncidentRepository:
         return incident_id
 
     def get_incident_by_alert_id(self, alert_id: str) -> Optional[dict[str, Any]]:
+        return self._get_incident(
+            "WHERE incidents.alert_id = ?",
+            (alert_id,),
+        )
+
+    def get_incident_by_ticket_id(self, ticket_id: str) -> Optional[dict[str, Any]]:
+        return self._get_incident(
+            "WHERE incidents.ticket_id = ?",
+            (ticket_id,),
+        )
+
+    def _get_incident(
+        self,
+        where_clause: str,
+        params: tuple[Any, ...],
+    ) -> Optional[dict[str, Any]]:
         with self._connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT
                     incidents.id,
                     incidents.alert_id,
@@ -267,50 +286,102 @@ class SQLiteIncidentRepository:
                     incidents.report_path,
                     incidents.triggered_actions_json,
                     incidents.policy_reasoning_json,
+                    incidents.enriched_json,
+                    incidents.response_json,
                     incidents.created_at,
                     incidents.updated_at,
+                    alerts.raw_json AS alert_json,
                     reports.markdown_path,
                     reports.html_path,
-                    reports.pdf_path
+                    reports.pdf_path,
+                    reports.markdown_content
                 FROM incidents
+                JOIN alerts ON alerts.alert_id = incidents.alert_id
                 LEFT JOIN reports ON reports.incident_id = incidents.id
-                WHERE incidents.alert_id = ?
+                {where_clause}
+                ORDER BY incidents.id DESC
+                LIMIT 1
                 """,
-                (alert_id,),
+                params,
             ).fetchone()
             if row is None:
                 return None
-            result = dict(row)
-            result["triggered_actions"] = json.loads(result.pop("triggered_actions_json"))
-            result["policy_reasoning"] = json.loads(result.pop("policy_reasoning_json"))
-            result["action_results"] = [
-                dict(action_row)
-                for action_row in conn.execute(
-                    """
-                    SELECT action, status, executed_at, details
-                    FROM action_results
-                    WHERE incident_id = ?
-                    ORDER BY id ASC
-                    """,
-                    (result["id"],),
-                ).fetchall()
-            ]
-            return result
+            return self._deserialize_incident(conn, row)
 
-    def list_incidents(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_incidents(
+        self,
+        limit: int = 100,
+        *,
+        status: Optional[str] = None,
+        risk_level: Optional[str] = None,
+        hostname: Optional[str] = None,
+        ticket_id: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         with self._connect() as conn:
+            where_clauses: list[str] = []
+            params: list[Any] = []
+
+            if status is not None:
+                where_clauses.append("status = ?")
+                params.append(status)
+            if risk_level is not None:
+                where_clauses.append("risk_level = ?")
+                params.append(risk_level)
+            if hostname is not None:
+                where_clauses.append("hostname = ?")
+                params.append(hostname)
+            if ticket_id is not None:
+                where_clauses.append("ticket_id = ?")
+                params.append(ticket_id)
+
+            where_sql = ""
+            if where_clauses:
+                where_sql = "WHERE " + " AND ".join(where_clauses)
+
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     id, alert_id, hostname, detection_name, risk_score,
                     risk_level, ticket_id, status, completed_at, report_path
                 FROM incidents
+                {where_sql}
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (*params, limit),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def _deserialize_incident(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> dict[str, Any]:
+        result = dict(row)
+        result["triggered_actions"] = json.loads(result.pop("triggered_actions_json"))
+        result["policy_reasoning"] = json.loads(result.pop("policy_reasoning_json"))
+        result["alert"] = json.loads(result.pop("alert_json"))
+        result["enriched_alert"] = json.loads(result.pop("enriched_json"))
+        result["response"] = json.loads(result.pop("response_json"))
+        result["action_results"] = [
+            dict(action_row)
+            for action_row in conn.execute(
+                """
+                SELECT action, status, executed_at, details
+                FROM action_results
+                WHERE incident_id = ?
+                ORDER BY id ASC
+                """,
+                (result["id"],),
+            ).fetchall()
+        ]
+        result["report"] = {
+            "markdown_path": result["markdown_path"],
+            "html_path": result["html_path"],
+            "pdf_path": result["pdf_path"],
+            "markdown_content": result["markdown_content"],
+        }
+        return result
 
     @staticmethod
     def _dump_model(model: Any) -> str:
