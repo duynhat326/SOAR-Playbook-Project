@@ -27,6 +27,7 @@ from enrichment.ip_intel import MockIPIntel
 from enrichment.mitre_mapping import MITREMapper
 from schemas.alert import EnrichedAlert, MalwareAlert
 from terminal_compat import build_console
+from time_utils import utc_now
 
 console = build_console()
 
@@ -105,7 +106,7 @@ class EnrichmentPipeline:
         enriched.risk_score = score
         enriched.risk_level = level
 
-        enriched.enriched_at = datetime.utcnow()
+        enriched.enriched_at = utc_now()
 
         if self._verbose:
             self._print_risk_summary(score, level, breakdown)

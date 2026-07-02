@@ -9,12 +9,12 @@ với body: {"command_string": "kill <pid>"}
 """
 
 import json
-from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
 
 from schemas.alert import ActionResult, ResponseAction
+from time_utils import utc_isoformat_z, utc_now
 
 _KILL_LOG = Path("output") / "killed_processes.json"
 
@@ -59,7 +59,7 @@ def execute(
     return ActionResult(
         action=ResponseAction.KILL_PROCESS,
         status="success",
-        executed_at=datetime.utcnow(),
+        executed_at=utc_now(),
         details=details,
     )
 
@@ -90,7 +90,7 @@ def _record_kill(
         "command_line": command_line,
         "reason"      : reason,
         "operator"    : operator,
-        "killed_at"   : datetime.utcnow().isoformat() + "Z",
+        "killed_at"   : utc_isoformat_z(),
         "mock"        : True,
     })
 

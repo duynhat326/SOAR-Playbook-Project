@@ -10,13 +10,13 @@ Microsoft Defender for Endpoint...) để cách ly host.
 """
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from loguru import logger
 
 from schemas.alert import ActionResult, ResponseAction
+from time_utils import utc_isoformat_z, utc_now
 
 # File theo dõi các host đã bị isolate (mock EDR state)
 _ISOLATION_LOG = Path("output") / "isolated_hosts.json"
@@ -62,7 +62,7 @@ def execute(
     return ActionResult(
         action=ResponseAction.ISOLATE_HOST,
         status="success",
-        executed_at=datetime.utcnow(),
+        executed_at=utc_now(),
         details=details,
     )
 
@@ -91,7 +91,7 @@ def _record_isolation(
         "alert_id"  : alert_id,
         "reason"    : reason,
         "operator"  : operator,
-        "isolated_at": datetime.utcnow().isoformat() + "Z",
+        "isolated_at": utc_isoformat_z(),
         "status"    : "isolated",
         "mock"      : True,
     })

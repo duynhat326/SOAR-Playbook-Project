@@ -8,7 +8,6 @@ cho phép bật/tắt hoặc chỉnh logic theo dữ liệu thay vì sửa code.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +38,7 @@ from schemas.alert import (
     Severity,
 )
 from terminal_compat import build_console
+from time_utils import utc_now
 
 console = build_console()
 
@@ -160,7 +160,7 @@ class PolicyEngine:
             policy_reasoning=reasoning,
             action_results=action_results,
             ticket_id=ticket_id,
-            completed_at=datetime.utcnow(),
+            completed_at=utc_now(),
             execution_trace=dispatch_outcome.execution_trace,
         )
 
@@ -459,7 +459,7 @@ class PolicyEngine:
             return ActionResult(
                 action=ResponseAction.ESCALATE,
                 status="success",
-                executed_at=datetime.utcnow(),
+                executed_at=utc_now(),
                 details=(
                     f"Alert escalated: Host '{alert.hostname}' là critical asset. "
                     f"Incident priority nâng lên HIGH. "

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Callable, Optional, Protocol, Sequence
 
 from loguru import logger
@@ -15,6 +14,7 @@ from schemas.alert import (
     QueuedActionRequest,
     ResponseAction,
 )
+from time_utils import utc_now
 
 ActionExecutor = Callable[[ResponseAction, EnrichedAlert], Optional[ActionResult]]
 
@@ -92,7 +92,7 @@ class ActionDispatcher:
                 ActionResult(
                     action=action,
                     status="skipped",
-                    executed_at=datetime.utcnow(),
+                    executed_at=utc_now(),
                     details=(
                         f"Queue dispatch not available for '{action.value}' in "
                         f"queue '{self._config.queue.queue_name}'."
@@ -119,7 +119,7 @@ class ActionDispatcher:
                 ActionResult(
                     action=request.action,
                     status="queued",
-                    executed_at=datetime.utcnow(),
+                    executed_at=utc_now(),
                     details=(
                         f"Queued '{request.action.value}' to '{request.queue_name}' "
                         f"(correlation_id={request.correlation_id})."

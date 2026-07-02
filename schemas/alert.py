@@ -12,6 +12,8 @@ from typing import Any, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from time_utils import utc_now
+
 
 class Severity(str, Enum):
     """Alert severity values from the input spec."""
@@ -135,7 +137,7 @@ class MalwareAlert(BaseModel):
         examples=["Trojan.Generic", "Malware.Powershell.Encoded"],
     )
     received_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=utc_now,
         description="Time the alert entered the SOAR pipeline (UTC)",
     )
 
@@ -210,7 +212,7 @@ class EnrichedAlert(BaseModel):
     )
     risk_score: float = Field(default=0.0, ge=0.0, le=100.0, description="Aggregate risk score")
     risk_level: str = Field(default="unknown", description="Risk level: low | medium | high | critical")
-    enriched_at: datetime = Field(default_factory=datetime.utcnow)
+    enriched_at: datetime = Field(default_factory=utc_now)
 
 
 class ActionResult(BaseModel):
@@ -218,7 +220,7 @@ class ActionResult(BaseModel):
 
     action: ResponseAction
     status: str = Field(..., description="'success' | 'failed' | 'skipped' | 'queued'")
-    executed_at: datetime = Field(default_factory=datetime.utcnow)
+    executed_at: datetime = Field(default_factory=utc_now)
     details: str = Field(default="", description="Execution details")
 
 
@@ -270,7 +272,7 @@ class IncidentResponse(BaseModel):
         default=None,
         description="Ticket ID created by the mock ticketing system",
     )
-    completed_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: datetime = Field(default_factory=utc_now)
     report_path: Optional[str] = Field(
         default=None,
         description="Path to the generated incident report",

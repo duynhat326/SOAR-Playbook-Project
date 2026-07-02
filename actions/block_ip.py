@@ -12,12 +12,12 @@ Trong thực tế:
 """
 
 import json
-from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
 
 from schemas.alert import ActionResult, ResponseAction
+from time_utils import utc_isoformat_z, utc_now
 
 _BLOCK_LOG = Path("output") / "blocked_ips.json"
 
@@ -63,7 +63,7 @@ def execute(
     return ActionResult(
         action=ResponseAction.BLOCK_IP,
         status="success",
-        executed_at=datetime.utcnow(),
+        executed_at=utc_now(),
         details=details,
     )
 
@@ -99,7 +99,7 @@ def _record_block(
         "reason"      : reason,
         "confidence"  : confidence,
         "operator"    : operator,
-        "blocked_at"  : datetime.utcnow().isoformat() + "Z",
+        "blocked_at"  : utc_isoformat_z(),
         "duplicate"   : already_blocked,
         "mock"        : True,
     })

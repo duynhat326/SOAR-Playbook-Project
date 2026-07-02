@@ -14,13 +14,13 @@ Chạy: streamlit run dashboard/app.py
 
 import json
 import sys
-from datetime import datetime
 from pathlib import Path
 
 # Đảm bảo import được các module trong project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import streamlit as st
+from time_utils import utc_now
 
 # ── Cấu hình trang ────────────────────────────────────────────────────
 st.set_page_config(
@@ -133,7 +133,7 @@ def run_pipeline(alert_data: dict):
             "risk_level": enriched.risk_level,
             "actions":    [a.value for a in response.triggered_actions],
             "ticket_id":  response.ticket_id,
-            "timestamp":  datetime.utcnow().strftime("%H:%M:%S"),
+            "timestamp":  utc_now().strftime("%H:%M:%S"),
         })
 
     return response
@@ -456,7 +456,7 @@ with tab3:
             st.download_button(
                 "⬇️ Download Markdown",
                 data=md_content.encode("utf-8"),
-                file_name=f"incident_report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.md",
+                file_name=f"incident_report_{utc_now().strftime('%Y%m%d_%H%M%S')}.md",
                 mime="text/markdown",
             )
 

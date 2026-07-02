@@ -12,13 +12,12 @@ Trong thực tế:
 Ở đây: in ra console + log file (mock notification).
 """
 
-from datetime import datetime
-
 from loguru import logger
 from rich.panel import Panel
 
 from schemas.alert import ActionResult, ResponseAction
 from terminal_compat import build_console
+from time_utils import utc_now
 
 console = build_console()
 
@@ -66,7 +65,7 @@ def execute(
         f"  Risk     : [{color}]{risk_score:.1f}/100 ({risk_level.upper()})[/{color}]\n"
         f"  Actions  : {actions_text}\n"
         f"  Ticket   : {ticket_id or 'N/A'}\n"
-        f"  Time     : {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        f"  Time     : {utc_now().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
         f"  [dim]Sent to {channel} by {operator}[/dim]"
     )
 
@@ -88,7 +87,7 @@ def execute(
     return ActionResult(
         action=ResponseAction.NOTIFY_SOC,
         status="success",
-        executed_at=datetime.utcnow(),
+        executed_at=utc_now(),
         details=details,
     )
 

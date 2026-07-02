@@ -15,13 +15,14 @@ Ticket ID format: INC-YYYYMMDD-XXXX
 import json
 import random
 import string
-from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import List, Optional
 
 from loguru import logger
 
 from schemas.alert import ActionResult, EnrichedAlert, ResponseAction
+from time_utils import utc_isoformat_z, utc_now
 
 _TICKET_DB = Path("output") / "tickets.json"
 
@@ -98,7 +99,7 @@ def execute(
         },
         "actions_taken"  : triggered_actions,
         "created_by"     : operator,
-        "created_at"     : datetime.utcnow().isoformat() + "Z",
+        "created_at"     : utc_isoformat_z(),
         "sla_deadline"   : _calculate_sla(risk_level),
         "mock"           : True,
     }
@@ -116,14 +117,14 @@ def execute(
     return ActionResult(
         action=ResponseAction.CREATE_TICKET,
         status="success",
-        executed_at=datetime.utcnow(),
+        executed_at=utc_now(),
         details=details,
     ), ticket_id
 
 
 def _generate_ticket_id() -> str:
     """Sinh Ticket ID format: INC-YYYYMMDD-XXXX"""
-    date_str = datetime.utcnow().strftime("%Y%m%d")
+    date_str = utc_now().strftime("%Y%m%d")
     suffix = "".join(random.choices(string.digits, k=4))
     return f"INC-{date_str}-{suffix}"
 
@@ -137,10 +138,9 @@ def _calculate_sla(risk_level: str) -> str:
     P3 Medium   → 24 giờ
     P4 Low      → 72 giờ
     """
-    from datetime import timedelta
     sla_hours = {"critical": 1, "high": 4, "medium": 24, "low": 72}
     hours = sla_hours.get(risk_level, 24)
-    deadline = datetime.utcnow() + timedelta(hours=hours)
+    deadline = utc_now() + timedelta(hours=hours)
     return deadline.strftime("%Y-%m-%dT%H:%M:%SZ") + f" (+{hours}h)"
 
 
