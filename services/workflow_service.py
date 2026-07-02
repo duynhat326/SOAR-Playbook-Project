@@ -8,7 +8,10 @@ from engine.policy_engine import PolicyEngine
 from enrichment.pipeline import EnrichmentPipeline
 from reporting.report_generator import ReportGenerator
 from schemas.alert import EnrichedAlert, IncidentResponse, MalwareAlert
-from storage.sqlite_repository import SQLiteIncidentRepository
+from storage.incident_repository import (
+    IncidentRepositoryProtocol,
+    create_incident_repository,
+)
 
 
 @dataclass
@@ -35,12 +38,12 @@ class SoarWorkflowService:
         *,
         verbose: bool = False,
         report_output_dir: Optional[Path] = None,
-        db_path: Optional[Path] = None,
+        db_path: Optional[str | Path] = None,
         persist_results: bool = True,
         pipeline: Optional[EnrichmentPipeline] = None,
         policy_engine: Optional[PolicyEngine] = None,
         report_generator: Optional[ReportGenerator] = None,
-        repository: Optional[SQLiteIncidentRepository] = None,
+        repository: Optional[IncidentRepositoryProtocol] = None,
     ) -> None:
         self._pipeline = pipeline or EnrichmentPipeline(verbose=verbose)
         self._policy_engine = policy_engine or PolicyEngine(verbose=verbose)
@@ -54,11 +57,15 @@ class SoarWorkflowService:
             self._repository = repository
         elif persist_results:
             resolved_db_path = db_path
-            if resolved_db_path is None and report_output_dir is not None:
-                resolved_db_path = report_output_dir.parent / "soar.db"
-            self._repository = SQLiteIncidentRepository(db_path=resolved_db_path)
+            self._repository = create_incident_repository(resolved_db_path)
         else:
             self._repository = None
+
+    @property
+    def db_path(self) -> str | Path:
+        if self._repository is None:
+            raise RuntimeError("Persistence is disabled for this workflow service.")
+        return self._repository.db_path
 
     def process_alert(
         self,
@@ -157,6 +164,11 @@ class SoarWorkflowService:
             hostname=hostname,
             ticket_id=ticket_id,
         )
+
+    def get_incident_metrics(self) -> dict[str, Any]:
+        if self._repository is None:
+            raise RuntimeError("Persistence is disabled for this workflow service.")
+        return self._repository.get_incident_metrics()
 
     @staticmethod
     def _workflow_result_from_record(

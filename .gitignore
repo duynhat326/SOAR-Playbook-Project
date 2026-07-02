@@ -28,6 +28,10 @@ output/
 htmlcov/
 .pytest_cache/
 
+# Local environment secrets
+.env
+.env.local
+
 # OS
 .DS_Store
 Thumbs.db

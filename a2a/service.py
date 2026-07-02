@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from a2a.postgres_storage import A2APostgresRepository
 from a2a.schemas import (
     AgentRecord,
     AgentRegistrationRequest,
@@ -30,23 +31,39 @@ from security import (
     ensure_roles,
     ensure_workspace_access,
 )
+from storage.postgres import is_postgres_target, resolve_database_url
 
 DEFAULT_DB_PATH = Path("output") / "a2a" / "a2a_bus.db"
 
 
-def resolve_db_path(raw_path: Optional[str | Path] = None) -> Path:
+def resolve_db_target(raw_path: Optional[str | Path] = None) -> str | Path:
     if raw_path is not None:
-        return Path(raw_path)
+        return raw_path
+
+    explicit_postgres = os.getenv("SOAR_A2A_DB_URL") or os.getenv("SUPABASE_DB_URL")
+    if explicit_postgres:
+        return resolve_database_url(explicit_postgres, preferred_env="SOAR_A2A_DB_URL")
+
     env_path = os.getenv("SOAR_A2A_DB_PATH")
     if env_path:
         return Path(env_path)
-    return DEFAULT_DB_PATH
+
+    raise RuntimeError(
+        "A2A persistence now expects Supabase Postgres. Set SOAR_A2A_DB_URL or SUPABASE_DB_URL."
+    )
+
+
+def resolve_db_path(raw_path: Optional[str | Path] = None) -> str | Path:
+    return resolve_db_target(raw_path)
 
 
 class A2AService:
     def __init__(self, db_path: Optional[str | Path] = None) -> None:
-        self.db_path = resolve_db_path(db_path)
-        self._repo = A2ARepository(self.db_path)
+        self.db_path = resolve_db_target(db_path)
+        if is_postgres_target(self.db_path):
+            self._repo = A2APostgresRepository(str(self.db_path))
+        else:
+            self._repo = A2ARepository(Path(self.db_path))
 
     def ensure_workspace(
         self,

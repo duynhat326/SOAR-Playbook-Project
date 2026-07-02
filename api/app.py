@@ -42,7 +42,7 @@ from security import (
     require_roles,
 )
 from services.workflow_service import SoarWorkflowService
-from storage.sqlite_repository import MAX_INCIDENT_LIST_LIMIT
+from storage.incident_repository import MAX_INCIDENT_LIST_LIMIT
 
 app = FastAPI(
     title="SOAR Malware Playbook API",

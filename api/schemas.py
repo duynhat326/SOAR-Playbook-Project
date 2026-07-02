@@ -22,14 +22,14 @@ ScenarioName = Literal[
 
 class ProcessAlertRequest(BaseModel):
     alert: MalwareAlert
-    generate_report: bool = Field(default=True)
+    generate_report: bool = Field(default=False)
     export_pdf: bool = Field(default=False)
 
 
 class ProcessScenarioRequest(BaseModel):
     scenario: ScenarioName = Field(default="mixed")
     seed: int = Field(default=2024, ge=0)
-    generate_report: bool = Field(default=True)
+    generate_report: bool = Field(default=False)
     export_pdf: bool = Field(default=False)
 
 

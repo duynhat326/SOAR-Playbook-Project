@@ -359,6 +359,24 @@ class SQLiteIncidentRepository:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def get_incident_metrics(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_incidents,
+                    COALESCE(AVG(risk_score), 0) AS average_risk_score,
+                    SUM(CASE WHEN risk_level = 'critical' THEN 1 ELSE 0 END) AS critical_incidents,
+                    SUM(CASE WHEN risk_level = 'high' THEN 1 ELSE 0 END) AS high_incidents,
+                    SUM(CASE WHEN risk_level = 'medium' THEN 1 ELSE 0 END) AS medium_incidents,
+                    SUM(CASE WHEN risk_level = 'low' THEN 1 ELSE 0 END) AS low_incidents,
+                    SUM(CASE WHEN ticket_id IS NOT NULL AND ticket_id != '' THEN 1 ELSE 0 END) AS ticketed_incidents,
+                    MAX(completed_at) AS latest_completed_at
+                FROM incidents
+                """
+            ).fetchone()
+        return dict(row)
+
     def _deserialize_incident(
         self,
         conn: sqlite3.Connection,

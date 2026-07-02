@@ -19,6 +19,7 @@ streamlit>=1.35.0         # Dashboard demo trực quan pipeline
 # --- API service ---
 fastapi>=0.115.0          # REST API cho webhook / integration bên ngoài
 uvicorn>=0.30.0           # ASGI server để chạy FastAPI
+psycopg[binary]>=3.2.0    # Supabase Postgres driver for server-side persistence
 
 # --- Report generation ---
 markdown2>=2.4.13         # Render Markdown → HTML
