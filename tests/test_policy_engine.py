@@ -471,6 +471,71 @@ def test_policy_config_can_disable_specific_rule(tmp_path):
     assert any("[DISABLED]" in reason for reason in response.policy_reasoning)
 
 
+def test_policy_config_can_require_min_risk_score_before_triggering_rule(tmp_path):
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["rules"][0]["thresholds"]["min_risk_score"] = 80.0
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    engine = PolicyEngine(verbose=False, policy_config_path=config_path)
+    alert = make_alert(severity=Severity.HIGH)
+    enriched = make_enriched(
+        alert,
+        hash_reputation=HashReputation.MALICIOUS,
+        hash_malicious_vendors=58,
+        hash_threat_name="Trojan.GenericKD.48756123",
+        risk_score=72.0,
+        risk_level="high",
+    )
+
+    response = engine.evaluate(enriched)
+
+    assert ResponseAction.ISOLATE_HOST not in response.triggered_actions
+    assert any("below minimum 80.0" in reason for reason in response.policy_reasoning)
+
+
+def test_policy_config_can_require_min_severity_before_triggering_rule(tmp_path):
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["rules"][2]["thresholds"]["min_severity"] = "critical"
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    engine = PolicyEngine(verbose=False, policy_config_path=config_path)
+    alert = make_alert(hostname="SRV-DC01", severity=Severity.HIGH)
+    enriched = make_enriched(
+        alert,
+        asset_criticality=AssetCriticality.CRITICAL,
+        risk_score=60.0,
+        risk_level="high",
+    )
+
+    response = engine.evaluate(enriched)
+
+    assert ResponseAction.ESCALATE not in response.triggered_actions
+    assert any("Severity high below minimum critical" in reason for reason in response.policy_reasoning)
+
+
+def test_policy_config_username_allowlist_suppresses_rule(tmp_path):
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["rules"][1]["guards"]["username_allowlist"] = ["svc.backup"]
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    engine = PolicyEngine(verbose=False, policy_config_path=config_path)
+    alert = make_alert(
+        process_name="mimikatz.exe",
+        username="svc.backup",
+        command_line="mimikatz.exe privilege::debug sekurlsa::logonpasswords exit",
+        severity=Severity.HIGH,
+    )
+    enriched = make_enriched(alert, risk_score=65.0, risk_level="high")
+
+    response = engine.evaluate(enriched)
+
+    assert ResponseAction.KILL_PROCESS not in response.triggered_actions
+    assert any("allowlisted for 'kill_process'" in reason for reason in response.policy_reasoning)
+
+
 def test_queue_mode_without_publisher_falls_back_to_sync(tmp_path):
     config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
     config_data["execution"]["mode"] = "queued"

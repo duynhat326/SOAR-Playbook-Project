@@ -68,6 +68,20 @@ class SoarWorkflowService:
         export_pdf: bool = False,
         include_markdown_content: bool = False,
     ) -> WorkflowResult:
+        if self._repository is not None:
+            existing_incident = self._repository.get_incident_by_alert_id(alert.alert_id)
+            if existing_incident is not None:
+                workflow_result = self._workflow_result_from_record(
+                    existing_incident,
+                    include_markdown_content=include_markdown_content,
+                )
+                return self._ensure_replay_artifacts(
+                    workflow_result,
+                    generate_report=generate_report,
+                    export_pdf=export_pdf,
+                    include_markdown_content=include_markdown_content,
+                )
+
         enriched = self._pipeline.run(alert)
         response = self._policy_engine.evaluate(enriched)
         artifacts = ReportArtifacts()
@@ -143,3 +157,81 @@ class SoarWorkflowService:
             hostname=hostname,
             ticket_id=ticket_id,
         )
+
+    @staticmethod
+    def _workflow_result_from_record(
+        record: dict[str, Any],
+        *,
+        include_markdown_content: bool,
+    ) -> WorkflowResult:
+        alert = MalwareAlert.model_validate(record["alert"])
+        enriched_alert = EnrichedAlert.model_validate(record["enriched_alert"])
+        response = IncidentResponse.model_validate(record["response"])
+        report = record.get("report", {})
+
+        return WorkflowResult(
+            alert=alert,
+            enriched_alert=enriched_alert,
+            response=response,
+            artifacts=ReportArtifacts(
+                markdown_path=SoarWorkflowService._as_path(report.get("markdown_path")),
+                html_path=SoarWorkflowService._as_path(report.get("html_path")),
+                pdf_path=SoarWorkflowService._as_path(report.get("pdf_path")),
+                markdown_content=(
+                    report.get("markdown_content") if include_markdown_content else None
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _as_path(raw_path: Optional[str]) -> Optional[Path]:
+        return Path(raw_path) if raw_path else None
+
+    def _ensure_replay_artifacts(
+        self,
+        workflow_result: WorkflowResult,
+        *,
+        generate_report: bool,
+        export_pdf: bool,
+        include_markdown_content: bool,
+    ) -> WorkflowResult:
+        artifacts = workflow_result.artifacts
+        needs_report = generate_report and (
+            self._path_missing(artifacts.markdown_path)
+            or self._path_missing(artifacts.html_path)
+            or (export_pdf and self._path_missing(artifacts.pdf_path))
+        )
+
+        if needs_report:
+            md_path, html_path, pdf_path = self._report_generator.generate(
+                workflow_result.response,
+                export_pdf=export_pdf,
+            )
+            workflow_result.response.report_path = str(html_path)
+            workflow_result.artifacts = ReportArtifacts(
+                markdown_path=md_path,
+                html_path=html_path,
+                pdf_path=pdf_path,
+                markdown_content=(
+                    md_path.read_text(encoding="utf-8")
+                    if include_markdown_content
+                    else None
+                ),
+            )
+            if self._repository is not None:
+                self._repository.save_workflow_result(workflow_result)
+            return workflow_result
+
+        if (
+            include_markdown_content
+            and artifacts.markdown_content is None
+            and artifacts.markdown_path is not None
+            and artifacts.markdown_path.exists()
+        ):
+            artifacts.markdown_content = artifacts.markdown_path.read_text(encoding="utf-8")
+
+        return workflow_result
+
+    @staticmethod
+    def _path_missing(path: Optional[Path]) -> bool:
+        return path is None or not path.exists()

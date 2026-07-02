@@ -1,6 +1,7 @@
 import api.app as api_app
 import pytest
-from api.schemas import ProcessScenarioRequest
+from alert_generator.generator import generate_alert
+from api.schemas import ProcessAlertRequest, ProcessScenarioRequest
 from fastapi import HTTPException
 from services.workflow_service import SoarWorkflowService
 
@@ -158,3 +159,34 @@ def test_list_incidents_applies_optional_filters(tmp_path, monkeypatch):
     assert len(incidents) == 1
     assert incidents[0].alert_id == mixed.response.alert_id
     assert incidents[0].alert_id != benign.response.alert_id
+
+
+def test_process_scenario_replays_existing_incident_without_new_side_effects(tmp_path, monkeypatch):
+    test_service = SoarWorkflowService(
+        verbose=False,
+        db_path=tmp_path / "soar.db",
+    )
+    monkeypatch.setattr(api_app, "get_workflow_service", lambda: test_service)
+
+    alert = generate_alert(scenario="mixed", seed=9090)
+    request = ProcessAlertRequest(
+        alert=alert,
+        generate_report=False,
+        export_pdf=False,
+    )
+
+    first = api_app.process_incident(request)
+    second = api_app.process_incident(request)
+
+    assert first.response.ticket_id == second.response.ticket_id
+    assert first.response.completed_at == second.response.completed_at
+
+
+def test_list_incidents_openapi_exposes_limit_validation():
+    schema = api_app.app.openapi()
+    parameters = schema["paths"]["/api/v1/incidents"]["get"]["parameters"]
+    limit_parameter = next(item for item in parameters if item["name"] == "limit")
+
+    assert limit_parameter["schema"]["default"] == 50
+    assert limit_parameter["schema"]["minimum"] == 1
+    assert limit_parameter["schema"]["maximum"] == 200

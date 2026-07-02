@@ -8,7 +8,7 @@ import yaml
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from schemas.alert import ResponseAction
+from schemas.alert import ResponseAction, Severity
 
 DEFAULT_POLICY_PATH = Path(__file__).resolve().parent.parent / "policies" / "response_rules.yaml"
 
@@ -20,6 +20,12 @@ DEFAULT_POLICY_CONFIG: dict[str, Any] = {
             "queue_name": "policy-actions",
             "correlation_prefix": "policy",
             "fallback_to_sync": True,
+            "correlation_fields": [
+                "hostname",
+                "username",
+                "file_hash",
+                "destination_ip",
+            ],
         },
     },
     "rules": [
@@ -30,6 +36,7 @@ DEFAULT_POLICY_CONFIG: dict[str, Any] = {
             "condition_label": "Hash MALICIOUS?",
             "condition_type": "hash_reputation_equals",
             "action": "isolate_host",
+            "thresholds": {"min_risk_score": 0.0, "min_severity": "low"},
             "matches": {"value": "malicious"},
             "messages": {
                 "skipped": "Rule 1 [SKIP]: Hash enrichment không có dữ liệu.",
@@ -45,6 +52,7 @@ DEFAULT_POLICY_CONFIG: dict[str, Any] = {
             "condition_label": "Dangerous process blacklist?",
             "condition_type": "dangerous_process_blacklist",
             "action": "kill_process",
+            "guards": {"username_allowlist": []},
             "messages": {
                 "passed": "Rule 2 [PASS]: Process '{process_name}' không trong blacklist → no action",
                 "triggered": "Rule 2 [TRIGGERED]: Process '{process_name}' nằm trong dangerous process blacklist (MITRE ATT&CK mapped) → ACTION: KILL_PROCESS",
@@ -58,6 +66,7 @@ DEFAULT_POLICY_CONFIG: dict[str, Any] = {
             "condition_label": "Asset CRITICAL?",
             "condition_type": "asset_criticality_equals",
             "action": "escalate",
+            "thresholds": {"min_risk_score": 0.0, "min_severity": "low"},
             "matches": {"value": "critical"},
             "messages": {
                 "passed": "Rule 3 [PASS]: Asset criticality = {asset_criticality} (not critical) → no action",
@@ -72,6 +81,7 @@ DEFAULT_POLICY_CONFIG: dict[str, Any] = {
             "condition_label": "IP is C2?",
             "condition_type": "ip_is_c2",
             "action": "block_ip",
+            "thresholds": {"min_risk_score": 0.0, "min_severity": "low"},
             "matches": {"value": True},
             "messages": {
                 "skipped": "Rule 4 [SKIP]: IP enrichment không có dữ liệu.",
@@ -155,6 +165,41 @@ class PolicyExecutionConfig(BaseModel):
     queue: PolicyQueueConfig = Field(default_factory=PolicyQueueConfig)
 
 
+class PolicyThresholds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    min_risk_score: float = Field(default=0.0, ge=0.0, le=100.0)
+    min_severity: Severity = Severity.LOW
+
+
+class PolicyGuards(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username_allowlist: list[str] = Field(default_factory=list)
+
+    @field_validator("username_allowlist")
+    @classmethod
+    def validate_username_allowlist(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+
+        for value in values:
+            candidate = value.strip()
+            if not candidate:
+                raise ValueError("Guard username_allowlist entries must not be empty")
+            lowered = candidate.casefold()
+            if lowered in seen:
+                duplicates.add(candidate)
+            seen.add(lowered)
+            normalized.append(candidate)
+
+        if duplicates:
+            duplicate_list = ", ".join(sorted(duplicates))
+            raise ValueError(f"Duplicate username_allowlist entries are not allowed: {duplicate_list}")
+        return normalized
+
+
 class PolicyMessages(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -174,6 +219,8 @@ class PolicyRule(BaseModel):
     condition_label: str
     condition_type: PolicyConditionType
     action: ResponseAction
+    thresholds: PolicyThresholds = Field(default_factory=PolicyThresholds)
+    guards: PolicyGuards = Field(default_factory=PolicyGuards)
     matches: dict[str, Any] = Field(default_factory=dict)
     messages: PolicyMessages
 

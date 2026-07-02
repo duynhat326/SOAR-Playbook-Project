@@ -17,6 +17,9 @@ rules:
     condition_label: Hash MALICIOUS?
     condition_type: hash_reputation_equals
     action: isolate_host
+    thresholds:
+      min_risk_score: 0.0
+      min_severity: low
     matches:
       value: malicious
     messages:
@@ -30,6 +33,8 @@ rules:
     condition_label: Dangerous process blacklist?
     condition_type: dangerous_process_blacklist
     action: kill_process
+    guards:
+      username_allowlist: []
     messages:
       passed: "Rule 2 [PASS]: Process '{process_name}' không trong blacklist → no action"
       triggered: "Rule 2 [TRIGGERED]: Process '{process_name}' nằm trong dangerous process blacklist (MITRE ATT&CK mapped) → ACTION: KILL_PROCESS"
@@ -40,6 +45,9 @@ rules:
     condition_label: Asset CRITICAL?
     condition_type: asset_criticality_equals
     action: escalate
+    thresholds:
+      min_risk_score: 0.0
+      min_severity: low
     matches:
       value: critical
     messages:
@@ -52,6 +60,9 @@ rules:
     condition_label: IP is C2?
     condition_type: ip_is_c2
     action: block_ip
+    thresholds:
+      min_risk_score: 0.0
+      min_severity: low
     matches:
       value: true
     messages:

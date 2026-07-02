@@ -37,6 +37,7 @@ from schemas.alert import (
     IPReputation,
     IncidentResponse,
     ResponseAction,
+    Severity,
 )
 
 console = Console()
@@ -183,6 +184,14 @@ class PolicyEngine:
                 reasoning=self._render_message(rule.messages.disabled, context),
             )
 
+        guard_result = self._apply_rule_guards(rule, enriched)
+        if guard_result is not None:
+            return guard_result
+
+        threshold_result = self._apply_rule_thresholds(rule, enriched)
+        if threshold_result is not None:
+            return threshold_result
+
         evaluator_map = {
             PolicyConditionType.HASH_REPUTATION_EQUALS: self._eval_hash_reputation,
             PolicyConditionType.DANGEROUS_PROCESS_BLACKLIST: self._eval_dangerous_process,
@@ -198,6 +207,54 @@ class PolicyEngine:
                 reasoning=f"{rule.label} [DISABLED]: Unsupported condition_type '{rule.condition_type}'.",
             )
         return evaluator(rule, enriched, context)
+
+    def _apply_rule_guards(
+        self,
+        rule: PolicyRule,
+        enriched: EnrichedAlert,
+    ) -> RuleEvaluation | None:
+        username = enriched.original_alert.username
+        normalized_allowlist = {value.casefold() for value in rule.guards.username_allowlist}
+        if username.casefold() in normalized_allowlist:
+            return RuleEvaluation(
+                rule=rule,
+                status="passed",
+                reasoning=(
+                    f"{rule.label} [PASS]: Username '{username}' is allowlisted for "
+                    f"'{rule.action.value}' → no action"
+                ),
+            )
+        return None
+
+    def _apply_rule_thresholds(
+        self,
+        rule: PolicyRule,
+        enriched: EnrichedAlert,
+    ) -> RuleEvaluation | None:
+        threshold = rule.thresholds
+        alert = enriched.original_alert
+
+        if enriched.risk_score < threshold.min_risk_score:
+            return RuleEvaluation(
+                rule=rule,
+                status="passed",
+                reasoning=(
+                    f"{rule.label} [PASS]: Risk score {enriched.risk_score:.1f} below minimum "
+                    f"{threshold.min_risk_score:.1f} → no action"
+                ),
+            )
+
+        if self._severity_rank(alert.severity) < self._severity_rank(threshold.min_severity):
+            return RuleEvaluation(
+                rule=rule,
+                status="passed",
+                reasoning=(
+                    f"{rule.label} [PASS]: Severity {alert.severity.value} below minimum "
+                    f"{threshold.min_severity.value} → no action"
+                ),
+            )
+
+        return None
 
     def _eval_hash_reputation(
         self,
@@ -320,8 +377,11 @@ class PolicyEngine:
             "rule_id": rule.rule_id,
             "rule_label": rule.label,
             "hostname": alert.hostname,
+            "username": alert.username,
             "process_name": alert.process_name,
             "destination_ip": alert.destination_ip,
+            "severity": alert.severity.value,
+            "risk_score": enriched.risk_score,
             "hash_reputation": hash_result.reputation.value if hash_result else "unknown",
             "hash_vendor_ratio": (
                 f"{hash_result.malicious_vendors}/{hash_result.total_vendors}"
@@ -336,6 +396,15 @@ class PolicyEngine:
             "ip_confidence": ip_result.confidence_score if ip_result else 0,
             "action": rule.action.value,
         }
+
+    @staticmethod
+    def _severity_rank(severity: Severity) -> int:
+        return {
+            Severity.LOW: 1,
+            Severity.MEDIUM: 2,
+            Severity.HIGH: 3,
+            Severity.CRITICAL: 4,
+        }[severity]
 
     # ──────────────────────────────────────────────────────────────────
     # Action executor — dispatch từng action type

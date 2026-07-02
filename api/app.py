@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 
 from alert_generator.generator import generate_alert
 from a2a.schemas import (
@@ -31,6 +31,7 @@ from api.schemas import (
     ProcessScenarioRequest,
 )
 from services.workflow_service import SoarWorkflowService
+from storage.sqlite_repository import MAX_INCIDENT_LIST_LIMIT
 
 app = FastAPI(
     title="SOAR Malware Playbook API",
@@ -84,7 +85,7 @@ def process_scenario(request: ProcessScenarioRequest) -> ProcessIncidentResponse
 
 @app.get("/api/v1/incidents", response_model=list[IncidentSummaryResponse])
 def list_incidents(
-    limit: int = 50,
+    limit: int = Query(default=50, ge=1, le=MAX_INCIDENT_LIST_LIMIT),
     status: Optional[str] = None,
     risk_level: Optional[str] = None,
     hostname: Optional[str] = None,

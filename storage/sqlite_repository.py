@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, Optional
 if TYPE_CHECKING:
     from services.workflow_service import WorkflowResult
 
+MAX_INCIDENT_LIST_LIMIT = 200
+
 
 class SQLiteIncidentRepository:
     """SQLite-backed persistence for workflow executions."""
@@ -317,6 +319,11 @@ class SQLiteIncidentRepository:
         hostname: Optional[str] = None,
         ticket_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
+        if limit < 1 or limit > MAX_INCIDENT_LIST_LIMIT:
+            raise ValueError(
+                f"limit must be between 1 and {MAX_INCIDENT_LIST_LIMIT} inclusive"
+            )
+
         with self._connect() as conn:
             where_clauses: list[str] = []
             params: list[Any] = []

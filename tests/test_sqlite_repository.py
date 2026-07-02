@@ -1,8 +1,10 @@
 import sqlite3
 
+import pytest
+
 from alert_generator.generator import generate_alert
 from services.workflow_service import SoarWorkflowService
-from storage.sqlite_repository import SQLiteIncidentRepository
+from storage.sqlite_repository import MAX_INCIDENT_LIST_LIMIT, SQLiteIncidentRepository
 
 
 def test_sqlite_repository_persists_alert_incident_actions_and_report(tmp_path):
@@ -114,3 +116,15 @@ def test_sqlite_repository_lists_recent_incidents_with_filters(tmp_path):
     assert len(incidents) == 1
     assert len(filtered) == 1
     assert filtered[0]["alert_id"] == mixed_alert.alert_id
+
+
+def test_sqlite_repository_rejects_invalid_incident_list_limit(tmp_path):
+    repository = SQLiteIncidentRepository(db_path=tmp_path / "soar.db")
+
+    with pytest.raises(ValueError) as zero_limit:
+        repository.list_incidents(limit=0)
+    assert str(MAX_INCIDENT_LIST_LIMIT) in str(zero_limit.value)
+
+    with pytest.raises(ValueError) as oversized_limit:
+        repository.list_incidents(limit=MAX_INCIDENT_LIST_LIMIT + 1)
+    assert str(MAX_INCIDENT_LIST_LIMIT) in str(oversized_limit.value)

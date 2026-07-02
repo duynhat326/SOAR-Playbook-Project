@@ -69,6 +69,9 @@ def test_policy_loader_reads_execution_config(tmp_path):
         "file_hash",
         "destination_ip",
     ]
+    assert config.rules[0].thresholds.min_risk_score == 0.0
+    assert config.rules[0].thresholds.min_severity.value == "low"
+    assert config.rules[1].guards.username_allowlist == []
 
 
 def test_policy_loader_falls_back_to_defaults_on_invalid_rule_shape(tmp_path):
@@ -111,3 +114,28 @@ def test_policy_loader_falls_back_to_defaults_on_duplicate_correlation_fields(tm
         "file_hash",
         "destination_ip",
     ]
+
+
+def test_policy_loader_reads_thresholds_and_guards(tmp_path):
+    config_path = tmp_path / "policy.yaml"
+    custom = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    custom["rules"][0]["thresholds"] = {"min_risk_score": 80.0, "min_severity": "high"}
+    custom["rules"][1]["guards"] = {"username_allowlist": ["svc.backup", "SYSTEM"]}
+    config_path.write_text(yaml.safe_dump(custom, sort_keys=False), encoding="utf-8")
+
+    config = load_policy_config(config_path)
+
+    assert config.rules[0].thresholds.min_risk_score == 80.0
+    assert config.rules[0].thresholds.min_severity.value == "high"
+    assert config.rules[1].guards.username_allowlist == ["svc.backup", "SYSTEM"]
+
+
+def test_policy_loader_falls_back_to_defaults_on_duplicate_username_allowlist(tmp_path):
+    config_path = tmp_path / "policy.yaml"
+    custom = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    custom["rules"][1]["guards"] = {"username_allowlist": ["SYSTEM", "system"]}
+    config_path.write_text(yaml.safe_dump(custom, sort_keys=False), encoding="utf-8")
+
+    config = load_policy_config(config_path)
+
+    assert config.rules[1].guards.username_allowlist == []
