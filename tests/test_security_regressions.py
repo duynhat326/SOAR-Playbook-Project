@@ -111,6 +111,23 @@ def test_incident_api_requires_auth_and_redacts_sensitive_fields(
     assert incident.alert.command_line == "[redacted]"
     assert incident.alert.file_hash == "0" * len(alert.file_hash)
 
+    with pytest.raises(HTTPException) as exc_info:
+        api_app.get_incident_by_alert_id(
+            alert.alert_id,
+            include_sensitive=True,
+            principal=authenticate_token("incident-read-token"),
+        )
+    assert exc_info.value.status_code == 403
+
+    operator_incident = api_app.get_incident_by_alert_id(
+        alert.alert_id,
+        include_sensitive=True,
+        principal=authenticate_token("incident-process-token"),
+    )
+    assert operator_incident.alert.username == alert.username
+    assert operator_incident.alert.command_line == alert.command_line
+    assert operator_incident.alert.file_hash == alert.file_hash
+
 
 def test_a2a_api_blocks_spoofing_cross_inbox_access_and_health_leaks(
     tmp_path: Path,

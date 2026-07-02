@@ -33,6 +33,28 @@ class ProcessScenarioRequest(BaseModel):
     export_pdf: bool = Field(default=False)
 
 
+class DashboardScenarioOptionResponse(BaseModel):
+    value: ScenarioName
+    label: str
+    description: str
+
+
+class DashboardSampleOptionResponse(BaseModel):
+    value: str
+    label: str
+    scenario: ScenarioName
+    description: str
+
+
+class DashboardBootstrapResponse(BaseModel):
+    scenario_options: list[DashboardScenarioOptionResponse] = Field(default_factory=list)
+    sample_options: list[DashboardSampleOptionResponse] = Field(default_factory=list)
+    sample_alerts: dict[str, MalwareAlert] = Field(default_factory=dict)
+    default_sample_id: Optional[str] = None
+    default_scenario: ScenarioName = "mixed"
+    default_json: str
+
+
 class ReportArtifactsResponse(BaseModel):
     markdown_path: Optional[str] = None
     html_path: Optional[str] = None

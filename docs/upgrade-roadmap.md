@@ -1,205 +1,211 @@
-# SOAR Playbook Upgrade Roadmap
+# SOAR Playbook upgrade roadmap
 
-## Muc tieu nang cap
+This file tracks what is already done in the repo and what should come next.
 
-Project hien tai da co loi xu ly tot cho demo:
+## Current position
 
-- schema ro rang voi Pydantic
-- enrichment pipeline tach module
-- policy engine theo rule
-- dashboard Streamlit
-- output report va mock actions
+The project is no longer only a local malware-playbook demo.
 
-Muc tieu cua ban nang cap nay la bien repo tu "demo pipeline" thanh "nen tang SOAR co the mo rong", theo thu tu uu tien:
+It now has:
 
-1. chuan hoa orchestration layer de CLI, dashboard va API dung chung mot luong
-2. them API service de co the nhan webhook va tich hop ben ngoai
-3. them persistence co cau truc thay cho file JSON roi rac
-4. tach policy thanh du lieu cau hinh thay vi hardcode
-5. them background workers, correlation va analyst workflow
-6. thay mock adapters bang integration that
+- shared orchestration across CLI, API, and dashboard
+- FastAPI incident processing and incident history APIs
+- React dashboard as the main UI
+- Supabase/Postgres default persistence
+- SQLite-backed local/test flows when explicitly requested
+- policy-as-data through YAML
+- queue-ready execution trace and correlation hooks
+- RBAC and security regression tests
+- live VirusTotal-backed hash enrichment path
+- persisted Markdown/HTML report artifacts with dashboard preview
 
-## Nguyen tac thuc hien
+## Completed phases
 
-- moi phase phai tao ra gia tri su dung duoc
-- uu tien thay doi co the gop dan, tranh viet lai toan bo
-- giu backward compatibility cho CLI va dashboard trong cac phase dau
-- bat dau bang service layer dung lai cac module tot san co
+### Phase 0 - shared orchestration
 
-## Phase 0 - Baseline va khoa no ky thuat
+Status: done
 
-Trang thai: dang thuc hien
+Delivered:
 
-Muc tieu:
+- central workflow service
+- CLI, API, and dashboard aligned on the same orchestration path
+- idempotent replay behavior
 
-- ghi lai lo trinh nang cap ro rang
-- co service orchestration trung tam
-- xac dinh cac entrypoint moi se dung chung service do
+### Phase 1 - API surface
 
-Cong viec:
+Status: done
 
-- [x] danh gia kien truc hien tai
-- [x] chon lo trinh nang cap
-- [x] viet file roadmap trong repo
-- [x] tach orchestration layer thanh service tai su dung duoc
-- [x] noi `main.py` va `dashboard/app.py` vao service moi
+Delivered:
 
-Tieu chi hoan thanh:
+- health route
+- dashboard bootstrap route
+- incident process routes
+- incident list/detail routes
+- report HTML artifact route
 
-- khong con logic enrich -> policy -> report bi lap lai o nhieu entrypoint
+### Phase 2 - persistence
 
-## Phase 1 - API Service
+Status: done for current scope
 
-Trang thai: dang thuc hien
+Delivered:
 
-Muc tieu:
+- structured incident persistence
+- report artifact persistence
+- incident lookup by `alert_id`
+- incident lookup by `ticket_id`
+- list APIs for incident stream views
+- Supabase/Postgres default runtime target
 
-- them REST API de trigger pipeline
-- tao hop dong request/response on dinh cho tich hop tu EDR, SIEM, webhook
+Still open:
 
-Cong viec:
+- stronger migration/versioning discipline
+- longer-lived audit/report retention strategy
 
-- [x] them package `api/`
-- [x] them `FastAPI` va `uvicorn` vao dependencies
-- [x] tao endpoint `GET /health`
-- [x] tao endpoint `POST /api/v1/incidents/process`
-- [x] tao endpoint `POST /api/v1/incidents/process-scenario`
-- [x] dung chung service orchestration thay vi goi truc tiep pipeline trong route
-- [ ] tai lieu hoa cach chay API
+### Phase 3 - policy as data
 
-Tieu chi hoan thanh:
+Status: done for current scope
 
-- co the gui mot `MalwareAlert` hop le qua HTTP va nhan `IncidentResponse`
-- co the goi theo scenario cho demo nhanh
+Delivered:
 
-## Phase 2 - Persistence Layer
+- YAML-backed rule loading
+- thresholds and guards support
+- execution mode config
+- correlation field config
+- fallback behavior for invalid policy files
 
-Trang thai: chua bat dau
+### Phase 4 - real integrations
 
-Muc tieu:
+Status: partial
 
-- thay output file tam bang persistence co cau truc
-- co lich su incident, action, artifact va audit trail
+Delivered:
 
-Cong viec:
+- live VirusTotal hash enrichment path
+- fallback-safe runtime behavior when live intel is unavailable
 
-- [x] tao `storage/` hoac `repositories/`
-- [x] chon SQLite lam buoc dau, sau do mo duong sang Postgres
-- [x] tao bang `alerts`
-- [x] tao bang `incidents`
-- [x] tao bang `action_results`
-- [x] tao bang `reports`
-- [x] luu du lieu ngay sau khi pipeline chay xong
-- [ ] them idempotency key de tranh tao ticket trung khi webhook gui lai
+Still open:
 
-Tieu chi hoan thanh:
+- richer real IP intel provider
+- real CMDB adapter
+- real ticketing adapter
+- more robust timeout/retry/rate-limit handling
 
-- incident co the duoc truy van lai bang `alert_id` hoac `ticket_id`
-- khong phu thuoc vao `output/*.json` de xac dinh state chinh
+### Phase 5 - analyst experience
 
-## Phase 3 - Policy as Data
+Status: baseline done
 
-Trang thai: chua bat dau
+Delivered:
 
-Muc tieu:
+- React dashboard is now the main UI
+- connected intake against FastAPI
+- incident stream
+- priority queue/watchlist
+- incident detail deep dive
+- Markdown report preview
+- HTML report open action
+- execution trace panel
+- enrichment source visibility
 
-- dua rules ra khoi code hardcoded
-- cho phep bat/tat rule, sua threshold ma khong can deploy lai code
+Still open:
 
-Cong viec:
+- analyst approval flows
+- richer filtering and saved views
+- browser automation coverage
 
-- [x] tao `policies/response_rules.yaml`
-- [x] dinh nghia schema cho rule
-- [x] viet policy loader + validator
-- [x] doi `engine/policy_engine.py` sang evaluate theo rule config
-- [ ] ho tro severity threshold, asset threshold, allowlist, denylist
-- [x] them fallback khi file policy loi
+### Phase 6 - queue and async boundary
 
-Tieu chi hoan thanh:
+Status: partial foundation done
 
-- thay doi rule co the thuc hien bang config
-- policy engine van tra ve reasoning ro rang
+Delivered:
 
-## Phase 4 - Real Integrations
+- execution trace in incident responses
+- correlation hooks in queue-ready metadata
+- queue-mode aware policy execution model
 
-Trang thai: chua bat dau
+Still open:
 
-Muc tieu:
+- real queue publisher
+- worker processes
+- retry and dead-letter handling
+- analyst-visible async action lifecycle
 
-- thay mock intel va mock action bang adapter that theo tung lop
+## Recently completed work
 
-Cong viec:
+These items were finished in the latest dashboard/API hardening pass:
 
-- [ ] them config env cho API keys
-- [ ] them `VirusTotalHashIntel`
-- [ ] them `AbuseIPDBIntel` hoac `OTXIntel`
-- [ ] them `ServiceNowCMDB` hoac adapter CMDB bat ky
-- [ ] them ticketing adapter that nhu TheHive, Jira hoac ServiceNow
-- [ ] them che do fallback mock/degraded mode
-- [ ] them retry, timeout, rate-limit va observability cho adapter
+- React dashboard became the primary supported UI
+- old dashboard links/docs were redirected toward React-first usage
+- Supabase alert persistence path was re-verified
+- live VirusTotal enrichment path was exercised
+- Vite dev proxy now reads repo-root env and injects auth server-side
+- detail view now shows report preview, report HTML link, and execution trace
+- priority queue updates immediately after `Process Alert`
+- operator-only incident detail reads can include sensitive fields
+- sanitized/redacted payloads are rejected at intake instead of being re-processed
 
-Tieu chi hoan thanh:
+## Recommended next phases
 
-- co the chon adapter qua config
-- loi integration khong lam sap toan bo pipeline
+### 1. Real async remediation
 
-## Phase 5 - Analyst Experience
+Priority: high
 
-Trang thai: chua bat dau
+Build:
 
-Muc tieu:
+- queue publisher abstraction backed by a real queue
+- worker execution service
+- action retry policy
+- failure recovery and dead-letter handling
 
-- nang dashboard thanh analyst console
-- theo doi incident va ra quyet dinh ban tu dong
+### 2. Better analyst workflow
 
-Cong viec:
+Priority: high
 
-- [ ] hien queue incident
-- [ ] filter theo risk level, host, user, action
-- [ ] trang chi tiet incident
-- [ ] hien reasoning cua tung policy
-- [ ] nut approve/reject cho cac action nguy hiem
-- [ ] lich su xu ly theo host va user
+Build:
 
-Tieu chi hoan thanh:
+- action approval/rejection flow
+- host/user/history drilldowns
+- incident notes and case-state tracking
+- bulk triage operations
 
-- analyst co the xem, xac nhan, va theo doi incident trong mot giao dien duy nhat
+### 3. Stronger external integrations
 
-## Phase 6 - Correlation va Asynchronous Execution
+Priority: medium
 
-Trang thai: chua bat dau
+Build:
 
-Muc tieu:
+- real IP reputation provider
+- real CMDB asset adapter
+- real ticketing/case management adapter
+- environment-specific adapter selection
 
-- xu ly duoc alert volume lon va tranh trung incident
+### 4. UI and browser regression coverage
 
-Cong viec:
+Priority: medium
 
-- [ ] bo sung worker queue
-- [ ] tach ingestion khoi execution
-- [ ] them correlation theo `hostname`, `username`, `file_hash`, `destination_ip`
-- [ ] gom nhieu alert vao mot incident cha
-- [ ] them retry queue cho action that
-- [ ] them dead-letter queue
+Build:
 
-Tieu chi hoan thanh:
+- Playwright smoke tests
+- dashboard workflow regression checks
+- report rendering checks through browser automation
 
-- nhieu alert lien quan khong tao ra nhieu ticket trung
-- pipeline co the chay bat dong bo va theo doi trang thai
+### 5. Observability and operations
 
-## Thu tu thuc hien de xuat
+Priority: medium
 
-1. Hoan thanh service layer va API scaffold.
-2. Dua persistence vao service/API.
-3. Chuyen policy sang config.
-4. Chon 1 adapter intel that va 1 adapter ticketing that.
-5. Nang dashboard va worker/correlation.
+Build:
 
-## Hang muc dang lam ngay bay gio
+- structured request tracing
+- richer audit logging
+- health/readiness checks for external dependencies
+- production-style configuration validation
 
-Trong lan cap nhat nay, muc tieu la:
+## Do not regress
 
-- tao roadmap nay
-- tao service orchestration dung chung
-- scaffold FastAPI API
-- cap nhat CLI va dashboard de dung service moi
+Any new work should preserve:
+
+- idempotent incident replay
+- report artifact hydration
+- React-first dashboard flow
+- RBAC enforcement
+- read-only redaction defaults
+- operator-only sensitive field access
+- intake rejection for redacted payloads

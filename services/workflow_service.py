@@ -139,12 +139,20 @@ class SoarWorkflowService:
     def get_incident_by_alert_id(self, alert_id: str) -> Optional[dict[str, Any]]:
         if self._repository is None:
             raise RuntimeError("Persistence is disabled for this workflow service.")
-        return self._repository.get_incident_by_alert_id(alert_id)
+        record = self._repository.get_incident_by_alert_id(alert_id)
+        return self._hydrate_incident_record(
+            record,
+            include_markdown_content=True,
+        )
 
     def get_incident_by_ticket_id(self, ticket_id: str) -> Optional[dict[str, Any]]:
         if self._repository is None:
             raise RuntimeError("Persistence is disabled for this workflow service.")
-        return self._repository.get_incident_by_ticket_id(ticket_id)
+        record = self._repository.get_incident_by_ticket_id(ticket_id)
+        return self._hydrate_incident_record(
+            record,
+            include_markdown_content=True,
+        )
 
     def list_incidents(
         self,
@@ -247,3 +255,27 @@ class SoarWorkflowService:
     @staticmethod
     def _path_missing(path: Optional[Path]) -> bool:
         return path is None or not path.exists()
+
+    @staticmethod
+    def _hydrate_incident_record(
+        record: Optional[dict[str, Any]],
+        *,
+        include_markdown_content: bool,
+    ) -> Optional[dict[str, Any]]:
+        if record is None:
+            return None
+
+        hydrated = dict(record)
+        report = dict(hydrated.get("report") or {})
+
+        if (
+            include_markdown_content
+            and report.get("markdown_content") is None
+            and report.get("markdown_path")
+        ):
+            markdown_path = Path(str(report["markdown_path"]))
+            if markdown_path.exists():
+                report["markdown_content"] = markdown_path.read_text(encoding="utf-8")
+
+        hydrated["report"] = report
+        return hydrated

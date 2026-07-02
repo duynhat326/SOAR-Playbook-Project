@@ -14,16 +14,18 @@ Output: EnrichedAlert đầy đủ, sẵn sàng để policy engine xử lý.
 """
 
 from datetime import datetime
+import os
 
 from loguru import logger
 from rich.panel import Panel
 from rich.text import Text
 
+from env_utils import load_local_env_files
 from engine.risk_scoring import RiskScoringEngine
 from enrichment.asset_db import MockAssetDB
 from enrichment.base import BaseAssetDB, BaseHashIntel, BaseIPIntel
-from enrichment.hash_intel import MockHashIntel
-from enrichment.ip_intel import MockIPIntel
+from enrichment.hash_intel import MockHashIntel, VirusTotalHashIntel
+from enrichment.ip_intel import MockIPIntel, VirusTotalIPIntel
 from enrichment.mitre_mapping import MITREMapper
 from schemas.alert import EnrichedAlert, MalwareAlert
 from terminal_compat import build_console
@@ -57,8 +59,22 @@ class EnrichmentPipeline:
         risk_engine:  RiskScoringEngine = None,
         verbose:      bool           = True,
     ):
-        self._hash_intel   = hash_intel   or MockHashIntel()
-        self._ip_intel     = ip_intel     or MockIPIntel()
+        load_local_env_files()
+        intel_provider = os.getenv("SOAR_INTEL_PROVIDER", "mock").strip().lower()
+
+        if hash_intel is not None:
+            self._hash_intel = hash_intel
+        elif intel_provider == "virustotal":
+            self._hash_intel = VirusTotalHashIntel()
+        else:
+            self._hash_intel = MockHashIntel()
+
+        if ip_intel is not None:
+            self._ip_intel = ip_intel
+        elif intel_provider == "virustotal":
+            self._ip_intel = VirusTotalIPIntel()
+        else:
+            self._ip_intel = MockIPIntel()
         self._asset_db     = asset_db     or MockAssetDB()
         self._mitre_mapper = mitre_mapper or MITREMapper()
         self._risk_engine  = risk_engine  or RiskScoringEngine()

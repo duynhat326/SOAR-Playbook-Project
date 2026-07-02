@@ -6,31 +6,55 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
 env/
 venv/
 .venv/
 *.egg-info/
 dist/
 build/
+node_modules/
+*.tsbuildinfo
+.vite/
 
 # Output / reports
 output/
 *.pdf
+*.log
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+.cursor/
+.gemini/
 
 # Test coverage
 .coverage
 htmlcov/
-.pytest_cache/
 
 # Local environment secrets
 .env
 .env.local
+.env.*
+!.env.example
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Keys / certificates / secret blobs
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.token
+*.secrets*
 
 # OS
 .DS_Store

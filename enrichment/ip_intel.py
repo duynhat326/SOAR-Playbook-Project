@@ -1,19 +1,10 @@
 """
 enrichment/ip_intel.py
 ======================
-Mock implementation của IP Reputation lookup (AbuseIPDB-like).
+IP reputation providers.
 
-Interface: BaseIPIntel
-Mock DB  : data/mock_ip_db.json
-
-Cách upgrade lên AbuseIPDB API thật:
-    class AbuseIPDBIntel(BaseIPIntel):
-        def __init__(self, api_key: str): ...
-        def lookup(self, ip_address: str) -> IPEnrichment:
-            # gọi requests.get("https://api.abuseipdb.com/api/v2/check",
-            #                  params={"ipAddress": ip_address, "maxAgeInDays": 90},
-            #                  headers={"Key": api_key})
-            ...
+- MockIPIntel        : static JSON for demo / offline tests
+- VirusTotalIPIntel  : live VirusTotal API v3 IP lookup
 """
 
 import json
@@ -24,10 +15,122 @@ from typing import Optional
 from loguru import logger
 
 from enrichment.base import BaseIPIntel
+from enrichment.virustotal_client import VirusTotalClient, VirusTotalNotFoundError
 from schemas.alert import IPEnrichment, IPReputation
 
 
 _DB_PATH = Path(__file__).parent.parent / "data" / "mock_ip_db.json"
+
+
+def _map_ip_reputation(
+    malicious: int,
+    suspicious: int,
+    total: int,
+) -> IPReputation:
+    if malicious > 0:
+        return IPReputation.MALICIOUS
+    if suspicious > 0:
+        return IPReputation.UNKNOWN
+    if total > 0:
+        return IPReputation.CLEAN
+    return IPReputation.UNKNOWN
+
+
+def _vt_confidence_score(stats: dict) -> int:
+    total = sum(int(value or 0) for value in stats.values() if isinstance(value, int))
+    if total <= 0:
+        return 0
+    malicious = int(stats.get("malicious", 0) or 0)
+    suspicious = int(stats.get("suspicious", 0) or 0)
+    weighted = malicious + (0.5 * suspicious)
+    return max(0, min(100, round((weighted / total) * 100)))
+
+
+def _infer_c2_signal(attributes: dict) -> bool:
+    keywords = ("c2", "command-and-control", "command_and_control", "botnet")
+    tags = [str(tag).lower() for tag in (attributes.get("tags") or [])]
+    if any(any(keyword in tag for keyword in keywords) for tag in tags):
+        return True
+
+    analysis_results = attributes.get("last_analysis_results") or {}
+    for result in analysis_results.values():
+        if not isinstance(result, dict):
+            continue
+        raw_value = " ".join(
+            str(part).lower()
+            for part in (
+                result.get("result"),
+                result.get("category"),
+                result.get("method"),
+            )
+            if part
+        )
+        if any(keyword in raw_value for keyword in keywords):
+            return True
+    return False
+
+
+class VirusTotalIPIntel(BaseIPIntel):
+    """Live IP reputation lookup using VirusTotal API v3."""
+
+    _PRIVATE_PREFIXES = ("10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                         "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+                         "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+                         "172.30.", "172.31.", "192.168.", "127.", "169.254.")
+
+    def __init__(self, api_key: Optional[str] = None, *, timeout: float = 15.0):
+        self._client = VirusTotalClient(api_key=api_key, timeout=timeout)
+
+    def _is_private_ip(self, ip: str) -> bool:
+        return any(ip.startswith(prefix) for prefix in self._PRIVATE_PREFIXES)
+
+    def lookup(self, ip_address: str) -> IPEnrichment:
+        logger.debug(f"[IPIntel] VirusTotal lookup for IP: {ip_address}")
+
+        if self._is_private_ip(ip_address):
+            return IPEnrichment(
+                ip_address=ip_address,
+                reputation=IPReputation.CLEAN,
+                confidence_score=0,
+                is_c2=False,
+                country="PRIVATE",
+                isp="Internal Network",
+                source="private_network",
+            )
+
+        try:
+            attributes = self._client.get_attributes(f"/ip_addresses/{ip_address}")
+        except VirusTotalNotFoundError:
+            logger.debug("[IPIntel] VirusTotal has no IP object for this address.")
+            return IPEnrichment(
+                ip_address=ip_address,
+                reputation=IPReputation.UNKNOWN,
+                confidence_score=0,
+                is_c2=False,
+                source="virustotal_api_v3",
+            )
+
+        stats = attributes.get("last_analysis_stats") or {}
+        malicious = int(stats.get("malicious", 0) or 0)
+        suspicious = int(stats.get("suspicious", 0) or 0)
+        total = sum(int(value or 0) for value in stats.values() if isinstance(value, int))
+
+        result = IPEnrichment(
+            ip_address=ip_address,
+            reputation=_map_ip_reputation(malicious, suspicious, total),
+            confidence_score=_vt_confidence_score(stats),
+            # VT IP objects expose tags/results/stats, not a first-class is_c2 boolean.
+            is_c2=_infer_c2_signal(attributes),
+            country=attributes.get("country"),
+            isp=attributes.get("as_owner"),
+            source="virustotal_api_v3",
+        )
+        logger.debug(
+            f"[IPIntel] VT result: {result.reputation.value} | "
+            f"confidence={result.confidence_score} | is_c2={result.is_c2} | "
+            f"country={result.country}"
+        )
+        return result
 
 
 class MockIPIntel(BaseIPIntel):

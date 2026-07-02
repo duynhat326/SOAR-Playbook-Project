@@ -9,7 +9,7 @@ This is the recommended split if you want 3 Codex agents to push this repo forwa
 Responsibility:
 
 - Own the architecture direction
-- Keep `main.py`, `dashboard/app.py`, and `api/app.py` stable
+- Keep `main.py`, `dashboard/src/App.tsx`, and `api/app.py` stable
 - Review the work from the other two agents
 - Merge interface changes into the shared service layer
 - Run regression tests before handoff

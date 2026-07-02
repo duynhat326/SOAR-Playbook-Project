@@ -1,17 +1,10 @@
 """
 enrichment/hash_intel.py
 ========================
-Mock implementation của Hash Reputation lookup (VirusTotal-like).
+Hash reputation providers.
 
-Interface: BaseHashIntel
-Mock DB  : data/mock_hash_db.json
-
-Cách upgrade lên VirusTotal API thật:
-    class VirusTotalHashIntel(BaseHashIntel):
-        def __init__(self, api_key: str): ...
-        def lookup(self, file_hash: str) -> HashEnrichment:
-            # gọi requests.get("https://www.virustotal.com/api/v3/files/{hash}")
-            ...
+- MockHashIntel         : static JSON for demo / offline tests
+- VirusTotalHashIntel   : live VirusTotal API v3 file lookup
 """
 
 import json
@@ -22,11 +15,88 @@ from typing import Optional
 from loguru import logger
 
 from enrichment.base import BaseHashIntel
+from enrichment.virustotal_client import VirusTotalClient, VirusTotalNotFoundError
 from schemas.alert import HashEnrichment, HashReputation
 
 
 # Đường dẫn đến mock DB (relative từ project root)
 _DB_PATH = Path(__file__).parent.parent / "data" / "mock_hash_db.json"
+
+
+def _map_hash_reputation(
+    malicious: int,
+    suspicious: int,
+    total: int,
+) -> HashReputation:
+    if malicious > 0:
+        return HashReputation.MALICIOUS
+    if suspicious > 0:
+        return HashReputation.SUSPICIOUS
+    if total > 0:
+        return HashReputation.CLEAN
+    return HashReputation.UNKNOWN
+
+
+def _extract_threat_name(attributes: dict) -> Optional[str]:
+    classification = attributes.get("popular_threat_classification") or {}
+    suggested = classification.get("suggested_threat_label")
+    if suggested:
+        return str(suggested)
+
+    popular_names = classification.get("popular_threat_name") or []
+    if popular_names and isinstance(popular_names[0], dict):
+        value = popular_names[0].get("value")
+        if value:
+            return str(value)
+
+    meaningful_name = attributes.get("meaningful_name")
+    return str(meaningful_name) if meaningful_name else None
+
+
+class VirusTotalHashIntel(BaseHashIntel):
+    """Live hash reputation lookup using VirusTotal API v3."""
+
+    def __init__(self, api_key: Optional[str] = None, *, timeout: float = 15.0):
+        self._client = VirusTotalClient(api_key=api_key, timeout=timeout)
+
+    def lookup(self, file_hash: str) -> HashEnrichment:
+        normalized = file_hash.lower().strip()
+        logger.debug(f"[HashIntel] VirusTotal lookup for hash: {normalized[:16]}...")
+
+        try:
+            attributes = self._client.get_attributes(f"/files/{normalized}")
+        except VirusTotalNotFoundError:
+            logger.debug("[HashIntel] VirusTotal has no file object for this hash.")
+            return HashEnrichment(
+                hash_value=normalized,
+                reputation=HashReputation.UNKNOWN,
+                malicious_vendors=0,
+                total_vendors=0,
+                threat_name=None,
+                source="virustotal_api_v3",
+            )
+
+        stats = attributes.get("last_analysis_stats") or {}
+        malicious = int(stats.get("malicious", 0) or 0)
+        suspicious = int(stats.get("suspicious", 0) or 0)
+        total = sum(int(value or 0) for value in stats.values() if isinstance(value, int))
+        reputation = _map_hash_reputation(malicious, suspicious, total)
+        threat_name = _extract_threat_name(attributes)
+
+        result = HashEnrichment(
+            hash_value=normalized,
+            reputation=reputation,
+            malicious_vendors=malicious,
+            total_vendors=total,
+            threat_name=threat_name,
+            source="virustotal_api_v3",
+        )
+        logger.debug(
+            f"[HashIntel] VT result: {reputation.value} | "
+            f"{result.malicious_vendors}/{result.total_vendors} vendors | "
+            f"threat='{result.threat_name}'"
+        )
+        return result
 
 
 class MockHashIntel(BaseHashIntel):

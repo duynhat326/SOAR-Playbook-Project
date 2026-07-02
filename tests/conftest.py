@@ -18,6 +18,15 @@ from security import (
 
 
 @pytest.fixture(autouse=True)
+def isolate_test_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Keep tests deterministic even when local .env files enable live services.
+    monkeypatch.setenv("SOAR_INTEL_PROVIDER", "mock")
+    monkeypatch.setenv("SUPABASE_DB_URL", "")
+    monkeypatch.setenv("SOAR_A2A_DB_URL", "")
+    monkeypatch.setenv("VIRUSTOTAL_API_KEY", "")
+
+
+@pytest.fixture(autouse=True)
 def clear_cached_services() -> Iterator[None]:
     api_app.get_workflow_service.cache_clear()
     api_app.get_a2a_service.cache_clear()
