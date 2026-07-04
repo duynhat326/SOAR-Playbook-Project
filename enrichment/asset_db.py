@@ -15,11 +15,14 @@ Cách upgrade lên ServiceNow CMDB thật:
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Optional
+from urllib import error, parse, request
 
 from loguru import logger
 
+from env_utils import load_local_env_files
 from enrichment.base import BaseAssetDB
 from schemas.alert import AssetCriticality
 
@@ -112,3 +115,72 @@ class MockAssetDB(BaseAssetDB):
         if record:
             return {**record, "hostname": hostname}
         return None
+
+
+class FileAssetDB(MockAssetDB):
+    """CMDB adapter backed by an explicit JSON file path."""
+
+    def __init__(self, db_path: Optional[Path] = None):
+        super().__init__(db_path=db_path or Path(os.getenv("SOAR_ASSET_DB_PATH", str(_DB_PATH))))
+
+
+class HttpAssetDB(BaseAssetDB):
+    """Lightweight HTTP CMDB adapter for simple inventory services."""
+
+    def __init__(
+        self,
+        base_url: Optional[str] = None,
+        *,
+        token: Optional[str] = None,
+        timeout: float = 10.0,
+    ) -> None:
+        load_local_env_files()
+        self._base_url = (base_url or os.getenv("SOAR_ASSET_API_URL", "")).strip().rstrip("/")
+        self._token = (token or os.getenv("SOAR_ASSET_API_TOKEN", "")).strip()
+        self._timeout = timeout
+        if not self._base_url:
+            raise RuntimeError("SOAR_ASSET_API_URL is required for the HTTP asset provider.")
+
+    def lookup(self, hostname: str) -> AssetCriticality:
+        info = self.get_asset_info(hostname) or {}
+        raw_value = str(info.get("criticality") or "normal").strip().lower()
+        try:
+            return AssetCriticality(raw_value)
+        except ValueError:
+            return AssetCriticality.NORMAL
+
+    def get_asset_info(self, hostname: str) -> Optional[dict]:
+        query = parse.quote(hostname, safe="")
+        url = f"{self._base_url}/assets/{query}"
+        request_headers = {"accept": "application/json"}
+        if self._token:
+            request_headers["authorization"] = f"Bearer {self._token}"
+
+        http_request = request.Request(url, headers=request_headers, method="GET")
+        try:
+            with request.urlopen(http_request, timeout=self._timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            if exc.code == 404:
+                logger.debug("[AssetDB] HTTP CMDB returned 404 for hostname '{}'.", hostname)
+                return None
+            details = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP CMDB lookup failed with HTTP {exc.code}: {details}") from exc
+        except error.URLError as exc:
+            raise RuntimeError(f"HTTP CMDB lookup failed: {exc.reason}") from exc
+
+        if isinstance(payload, dict) and "asset" in payload and isinstance(payload["asset"], dict):
+            payload = payload["asset"]
+        if not isinstance(payload, dict):
+            raise RuntimeError("HTTP CMDB lookup returned an invalid payload.")
+        return {**payload, "hostname": hostname}
+
+
+def build_asset_db_from_env() -> BaseAssetDB:
+    load_local_env_files()
+    provider = os.getenv("SOAR_ASSET_PROVIDER", "mock").strip().lower()
+    if provider == "file":
+        return FileAssetDB()
+    if provider == "http":
+        return HttpAssetDB()
+    return MockAssetDB()

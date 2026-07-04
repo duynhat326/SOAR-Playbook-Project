@@ -71,6 +71,10 @@ export function IntakePanel({ apiMode, bootstrap, processing, onProcess }: Intak
 
   const selectedScenario = bootstrap.scenario_options.find((option) => option.value === scenario);
   const selectedSample = bootstrap.sample_options.find((option) => option.value === sampleId);
+  const scenarioReady = bootstrap.scenario_options.length > 0;
+  const sampleReady = bootstrap.sample_options.length > 0;
+  const submitDisabled =
+    processing || apiMode !== "api" || (mode === "scenario" && !scenarioReady) || (mode === "sample" && !sampleReady);
 
   return (
     <section className="panel intake-panel">
@@ -79,8 +83,8 @@ export function IntakePanel({ apiMode, bootstrap, processing, onProcess }: Intak
           <span className="eyebrow">Alert intake</span>
           <h2>Launch a workflow</h2>
         </div>
-        <span className={`badge ${apiMode === "api" ? "tone-low" : "tone-neutral"}`}>
-          {apiMode === "api" ? "Connected endpoint" : "Local simulation"}
+        <span className={`badge ${apiMode === "api" ? "tone-low" : "tone-critical"}`}>
+          {apiMode === "api" ? "Connected backend" : "API required"}
         </span>
       </div>
 
@@ -106,7 +110,7 @@ export function IntakePanel({ apiMode, bootstrap, processing, onProcess }: Intak
           <div className="stack-sm">
             <label className="field">
               <span>Scenario preset</span>
-              <select value={scenario} onChange={(event) => setScenario(event.target.value as ScenarioKey)}>
+              <select disabled={!scenarioReady} value={scenario} onChange={(event) => setScenario(event.target.value as ScenarioKey)}>
                 {bootstrap.scenario_options.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
@@ -115,8 +119,8 @@ export function IntakePanel({ apiMode, bootstrap, processing, onProcess }: Intak
               </select>
             </label>
             <div className="soft-card">
-              <strong>{selectedScenario?.label}</strong>
-              <p>{selectedScenario?.description}</p>
+              <strong>{selectedScenario?.label ?? "Waiting for backend bootstrap"}</strong>
+              <p>{selectedScenario?.description ?? "Scenario presets load from the API when the dashboard is connected."}</p>
             </div>
           </div>
         )}
@@ -125,7 +129,7 @@ export function IntakePanel({ apiMode, bootstrap, processing, onProcess }: Intak
           <div className="stack-sm">
             <label className="field">
               <span>Sample payload</span>
-              <select value={sampleId} onChange={(event) => setSampleId(event.target.value)}>
+              <select disabled={!sampleReady} value={sampleId} onChange={(event) => setSampleId(event.target.value)}>
                 {bootstrap.sample_options.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
@@ -134,8 +138,8 @@ export function IntakePanel({ apiMode, bootstrap, processing, onProcess }: Intak
               </select>
             </label>
             <div className="soft-card">
-              <strong>{selectedSample?.label}</strong>
-              <p>{selectedSample?.description}</p>
+              <strong>{selectedSample?.label ?? "Waiting for backend bootstrap"}</strong>
+              <p>{selectedSample?.description ?? "Sample alerts are provided by the backend and processed through the real workflow."}</p>
             </div>
           </div>
         )}
@@ -153,17 +157,17 @@ export function IntakePanel({ apiMode, bootstrap, processing, onProcess }: Intak
         )}
 
         <div className="intake-note">
-          <strong>{apiMode === "api" ? "Backend mode" : "Frontend mock mode"}</strong>
+          <strong>{apiMode === "api" ? "Live workflow mode" : "Backend connection needed"}</strong>
           <span>
             {apiMode === "api"
-              ? "Requests are sent to the configured SOAR API with browser-bound session credentials."
-              : "No API is required right now. Demo incidents stay in memory for the current session only."}
+              ? "Requests are sent to the SOAR API, persisted to the repository, enriched, scored, queued, and reported."
+              : "This UI no longer serves client-side mock incidents. Start the backend stack so the dashboard can process real data."}
           </span>
         </div>
 
         {error ? <div className="banner banner-error">{error}</div> : null}
 
-        <button className="primary-button" disabled={processing} type="submit">
+        <button className="primary-button" disabled={submitDisabled} type="submit">
           {processing ? "Processing alert..." : "Process alert"}
         </button>
       </form>

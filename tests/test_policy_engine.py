@@ -558,7 +558,7 @@ def test_queue_mode_without_publisher_falls_back_to_sync(tmp_path):
     isolate_result = next(
         result for result in response.action_results if result.action == ResponseAction.ISOLATE_HOST
     )
-    assert isolate_result.status == "success"
+    assert isolate_result.status == "succeeded"
     assert response.execution_trace.configured_mode == "queued"
     assert response.execution_trace.effective_mode == "sync_fallback"
     assert response.execution_trace.queue_name == "policy-actions"

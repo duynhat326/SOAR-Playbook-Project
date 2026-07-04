@@ -43,6 +43,7 @@ Behavior:
 - `SOAR_DATABASE_URL` overrides the incident repository target
 - `SOAR_A2A_DB_URL` overrides the A2A repository target
 - `SOAR_API_PROXY_TARGET` and `SOAR_API_PROXY_TOKEN` are read by `dashboard/vite.config.ts`
+- `dashboard/api/*.js` uses the same `SOAR_API_PROXY_TARGET` and `SOAR_API_PROXY_TOKEN` values for production proxying on Vercel
 - repo-root `.env.local` is visible to Vite because the dashboard uses `envDir: ".."`
 
 ## 3. Optional live VirusTotal enrichment

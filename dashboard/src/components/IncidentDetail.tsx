@@ -1,12 +1,16 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { actionLabel, formatDateTime, formatRiskScore, riskTone, statusLabel, titleCase } from "../lib/format";
 import { buildIncidentReportUrl } from "../services/soarApi";
-import type { IncidentRecord, QueuedActionRequest } from "../types";
+import type { IncidentCaseStatus, IncidentRecord, QueuedActionRequest, RiskBreakdownComponent } from "../types";
 
 interface IncidentDetailProps {
   incident: IncidentRecord | null;
   loading: boolean;
+  onUpdateCase: (payload: { case_status?: string; case_owner?: string; comment?: string }) => void;
+  onAddNote: (body: string) => void;
+  onApproveAction: (correlationId: string, comment?: string) => void;
+  onRejectAction: (correlationId: string, comment?: string) => void;
 }
 
 function present(value: string | null | undefined, fallback = "Not set"): string {
@@ -37,13 +41,29 @@ function summarizeQueuedAction(request: QueuedActionRequest): string {
   const entries = Object.entries(request.payload)
     .map(([key, value]) => [key, compactValue(value)] as const)
     .filter(([, value]) => value.length > 0)
-    .slice(0, 4);
+    .slice(0, 5);
 
   if (entries.length === 0) {
     return "No payload metadata";
   }
 
   return entries.map(([key, value]) => `${key}=${value}`).join(" | ");
+}
+
+function actionStatusTone(status: string): string {
+  if (status === "failed") {
+    return "tone-critical";
+  }
+  if (status === "waiting_approval") {
+    return "tone-medium";
+  }
+  if (status === "running") {
+    return "tone-sky";
+  }
+  if (status === "queued" || status === "skipped") {
+    return "tone-neutral";
+  }
+  return "tone-low";
 }
 
 function renderMarkdownPreview(markdownContent: string): ReactNode {
@@ -168,7 +188,94 @@ function renderMarkdownPreview(markdownContent: string): ReactNode {
   return <div className="markdown-preview">{blocks}</div>;
 }
 
-export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
+function renderBreakdownRow(label: string, component?: RiskBreakdownComponent, emphasize = false): ReactNode {
+  if (!component) {
+    return null;
+  }
+
+  return (
+    <div className={`breakdown-row ${emphasize ? "is-total" : ""}`} key={label}>
+      <span>{label}</span>
+      <strong>{component.contribution.toFixed(2)}</strong>
+      <small>raw {component.raw.toFixed(3)}</small>
+    </div>
+  );
+}
+
+function renderObjectFacts(values: Record<string, unknown>): ReactNode {
+  const entries = Object.entries(values).filter(([, value]) => compactValue(value).length > 0);
+  if (entries.length === 0) {
+    return (
+      <div className="empty-mini">
+        <strong>No asset metadata returned.</strong>
+        <span>The CMDB lookup did not contribute extra host context for this incident.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="object-fact-grid">
+      {entries.map(([key, value]) => (
+        <div className="object-fact" key={key}>
+          <span>{key.replace(/_/g, " ")}</span>
+          <strong>{compactValue(value)}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function renderTagRow(tags: string[]): ReactNode {
+  if (tags.length === 0) {
+    return <span className="meta-empty">No tags</span>;
+  }
+
+  return (
+    <div className="pill-row">
+      {tags.map((tag) => (
+        <span className="badge tone-neutral" key={tag}>
+          {tag}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function renderAnalysisStats(stats: Record<string, number>): ReactNode {
+  const entries = Object.entries(stats);
+  if (entries.length === 0) {
+    return <span className="meta-empty">No analysis stats</span>;
+  }
+
+  return (
+    <div className="pill-row">
+      {entries.map(([key, value]) => (
+        <span className="badge tone-neutral" key={key}>
+          {key}: {value}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+export function IncidentDetail({
+  incident,
+  loading,
+  onUpdateCase,
+  onAddNote,
+  onApproveAction,
+  onRejectAction,
+}: IncidentDetailProps) {
+  const [caseOwnerDraft, setCaseOwnerDraft] = useState("");
+  const [caseStatusDraft, setCaseStatusDraft] = useState<IncidentCaseStatus>("new");
+  const [noteDraft, setNoteDraft] = useState("");
+
+  useEffect(() => {
+    setCaseOwnerDraft(incident?.case_owner ?? "");
+    setCaseStatusDraft((incident?.case_status ?? "new") as IncidentCaseStatus);
+    setNoteDraft("");
+  }, [incident?.alert_id, incident?.case_owner, incident?.case_status]);
+
   if (loading) {
     return (
       <section className="panel detail-panel">
@@ -185,7 +292,7 @@ export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
       <section className="panel detail-panel">
         <div className="empty-state">
           <strong>Select an incident to inspect it.</strong>
-          <span>The right-hand panel will show enrichment, actions, MITRE mappings, and the report preview.</span>
+          <span>The right-hand panel will show enrichment, actions, case context, and report preview.</span>
         </div>
       </section>
     );
@@ -211,10 +318,21 @@ export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
   ].filter((artifact) => artifact.value);
   const summaryFacts = [
     { label: "Ticket", value: incident.ticket_id ?? "Pending" },
+    { label: "Owner", value: incident.case_owner ?? "Unassigned" },
+    { label: "Case", value: titleCase(incident.case_status.replace(/_/g, " ")) },
+    { label: "Received", value: incident.alert.received_at ? formatDateTime(incident.alert.received_at) : "Not set" },
     { label: "Completed", value: formatDateTime(incident.completed_at) },
-    { label: "Process", value: incident.alert.process_name },
-    { label: "Asset", value: titleCase(enriched.asset_criticality) },
+    { label: "Risk", value: formatRiskScore(incident.risk_score) },
+    { label: "Queue", value: `${incident.queued_action_count}/${incident.pending_approval_count}/${incident.running_action_count}/${incident.failed_action_count}` },
+    { label: "Notes", value: `${incident.note_count}` },
   ];
+  const workflowSnapshot = {
+    enriched_alert: incident.enriched_alert,
+    response: incident.response,
+    report: incident.report,
+    notes: incident.notes,
+    audit_events: incident.audit_events,
+  };
 
   return (
     <section className="panel detail-panel">
@@ -232,7 +350,7 @@ export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
 
       <p className="detail-summary">{incident.detection_name}</p>
 
-      <div className="detail-overview">
+      <div className="detail-overview detail-overview-wide">
         {summaryFacts.map((fact) => (
           <div className="detail-overview-item" key={fact.label}>
             <span>{fact.label}</span>
@@ -241,9 +359,80 @@ export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
         ))}
       </div>
 
-      <div className="detail-grid">
+      <div className="detail-grid detail-grid-expanded">
         <article className="soft-card">
-          <strong className="card-title">Asset context</strong>
+          <strong className="card-title">Case management</strong>
+          <div className="case-editor-grid">
+            <label className="field">
+              <span>Owner</span>
+              <input value={caseOwnerDraft} onChange={(event) => setCaseOwnerDraft(event.target.value)} />
+            </label>
+            <label className="field">
+              <span>Status</span>
+              <select value={caseStatusDraft} onChange={(event) => setCaseStatusDraft(event.target.value as IncidentCaseStatus)}>
+                <option value="new">New</option>
+                <option value="triaged">Triaged</option>
+                <option value="in_progress">In progress</option>
+                <option value="monitoring">Monitoring</option>
+                <option value="resolved">Resolved</option>
+                <option value="closed">Closed</option>
+              </select>
+            </label>
+          </div>
+          <div className="button-row">
+            <button
+              className="primary-button compact-button"
+              onClick={() => onUpdateCase({ case_owner: caseOwnerDraft, case_status: caseStatusDraft })}
+              type="button"
+            >
+              Update case
+            </button>
+          </div>
+          <div className="stack-sm">
+            <strong className="subtle-title">Analyst notes</strong>
+            <textarea
+              className="note-input"
+              placeholder="Capture triage context, approvals, or remediation rationale."
+              rows={4}
+              value={noteDraft}
+              onChange={(event) => setNoteDraft(event.target.value)}
+            />
+            <div className="button-row">
+              <button
+                className="primary-button compact-button"
+                disabled={noteDraft.trim().length === 0}
+                onClick={() => {
+                  onAddNote(noteDraft.trim());
+                  setNoteDraft("");
+                }}
+                type="button"
+              >
+                Add note
+              </button>
+            </div>
+            <div className="timeline-list">
+              {incident.notes.length > 0 ? (
+                incident.notes.map((note) => (
+                  <div className="timeline-item" key={note.note_id}>
+                    <div className="timeline-head">
+                      <strong>{note.author}</strong>
+                      <small>{formatDateTime(note.created_at)}</small>
+                    </div>
+                    <p>{note.body}</p>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-mini">
+                  <strong>No analyst notes yet.</strong>
+                  <span>Add triage context here so the incident reads like a case, not a demo row.</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </article>
+
+        <article className="soft-card">
+          <strong className="card-title">Case context</strong>
           <div className="key-grid">
             <div className="key-item">
               <span>User</span>
@@ -254,65 +443,62 @@ export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
               <strong>{titleCase(incident.alert.severity)}</strong>
             </div>
             <div className="key-item">
+              <span>Process</span>
+              <strong>{incident.alert.process_name}</strong>
+            </div>
+            <div className="key-item">
               <span>Parent process</span>
               <strong>{incident.alert.parent_process}</strong>
             </div>
             <div className="key-item">
+              <span>Destination IP</span>
+              <strong>{incident.alert.destination_ip}</strong>
+            </div>
+            <div className="key-item">
+              <span>Detection</span>
+              <strong>{incident.alert.detection_name}</strong>
+            </div>
+          </div>
+          <div className="stacked-code">
+            <div className="code-block-wrap">
+              <span className="code-label">File path</span>
+              <div className="code-card wrap-anywhere">{incident.alert.file_path}</div>
+            </div>
+            <div className="code-block-wrap">
+              <span className="code-label">Command line</span>
+              <div className="code-card wrap-anywhere">{incident.alert.command_line}</div>
+            </div>
+            <div className="code-block-wrap">
+              <span className="code-label">Alert ID / hash</span>
+              <div className="code-card wrap-anywhere">
+                {incident.alert.alert_id}
+                {"\n"}
+                {incident.alert.file_hash}
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <div className="detail-grid detail-grid-expanded">
+        <article className="soft-card">
+          <strong className="card-title">Asset and risk model</strong>
+          <div className="key-grid">
+            <div className="key-item">
               <span>Asset criticality</span>
               <strong>{titleCase(enriched.asset_criticality)}</strong>
             </div>
-          </div>
-          <div className="code-card">{incident.alert.command_line}</div>
-        </article>
-
-        <article className="soft-card">
-          <strong className="card-title">Threat telemetry</strong>
-          <div className="key-grid">
             <div className="key-item">
-              <span>Hash reputation</span>
-              <strong>{titleCase(hash?.reputation ?? "unknown")}</strong>
+              <span>Risk level</span>
+              <strong>{incident.risk_level.toUpperCase()}</strong>
             </div>
             <div className="key-item">
-              <span>Threat name</span>
-              <strong>{hash?.threat_name ?? "No label"}</strong>
+              <span>Risk total</span>
+              <strong>{enriched.risk_breakdown.total?.toFixed(1) ?? incident.risk_score.toFixed(1)}</strong>
             </div>
             <div className="key-item">
-              <span>Vendor hits</span>
-              <strong>
-                {hash ? `${hash.malicious_vendors}/${hash.total_vendors}` : "No data"}
-              </strong>
-            </div>
-            <div className="key-item">
-              <span>Hash intel source</span>
-              <strong>{present(hash?.source, "No data")}</strong>
-            </div>
-            <div className="key-item">
-              <span>Destination IP</span>
-              <strong>{ip?.ip_address ?? incident.alert.destination_ip}</strong>
-            </div>
-            <div className="key-item">
-              <span>Network verdict</span>
-              <strong>{titleCase(ip?.reputation ?? "unknown")}</strong>
-            </div>
-            <div className="key-item">
-              <span>IP confidence</span>
-              <strong>{ip ? `${ip.confidence_score}/100` : "No data"}</strong>
-            </div>
-            <div className="key-item">
-              <span>IP intel source</span>
-              <strong>{present(ip?.source, "No data")}</strong>
-            </div>
-            <div className="key-item">
-              <span>Country / ISP</span>
-              <strong>{ip ? `${ip.country ?? "Unknown"} / ${ip.isp ?? "Unknown"}` : "No data"}</strong>
-            </div>
-            <div className="key-item">
-              <span>C2 signal</span>
-              <strong>{ip?.is_c2 ? "Flagged" : "Not flagged"}</strong>
-            </div>
-            <div className="key-item">
-              <span>Intel sources</span>
-              <strong>{[hash?.source, ip?.source].filter(Boolean).join(" + ") || "No data"}</strong>
+              <span>Breakdown level</span>
+              <strong>{present(enriched.risk_breakdown.risk_level, incident.risk_level)}</strong>
             </div>
           </div>
           <div className="risk-band">
@@ -322,35 +508,204 @@ export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
             </div>
             <strong>{formatDateTime(incident.completed_at)}</strong>
           </div>
-        </article>
-      </div>
-
-      <div className="detail-grid detail-grid-tight">
-        <article className="soft-card">
-          <strong className="card-title">Automated response</strong>
-          <div className="action-list">
-            {incident.action_results.map((action) => (
-              <div className="action-item" key={`${action.action}-${action.executed_at}`}>
-                <div className="action-head">
-                  <span className="badge tone-sky">{actionLabel(action.action)}</span>
-                  <span className={`badge ${action.status === "queued" ? "tone-neutral" : "tone-low"}`}>
-                    {statusLabel(action.status)}
-                  </span>
-                </div>
-                <p>{action.details}</p>
-                <small>{formatDateTime(action.executed_at)}</small>
-              </div>
-            ))}
+          <div className="breakdown-list">
+            {renderBreakdownRow("Hash", enriched.risk_breakdown.hash)}
+            {renderBreakdownRow("IP", enriched.risk_breakdown.ip)}
+            {renderBreakdownRow("Asset", enriched.risk_breakdown.asset)}
+            {renderBreakdownRow("Severity", enriched.risk_breakdown.severity)}
+            {renderBreakdownRow("MITRE", enriched.risk_breakdown.mitre)}
+          </div>
+          <div className="stack-sm">
+            <strong className="subtle-title">CMDB asset metadata</strong>
+            {renderObjectFacts(enriched.asset_info)}
+          </div>
+          <div className="stack-sm">
+            <strong className="subtle-title">Risk reasoning</strong>
+            {enriched.risk_breakdown.reasoning.length > 0 ? (
+              <ul className="reasoning-list">
+                {enriched.risk_breakdown.reasoning.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            ) : (
+              <span className="meta-empty">No scoring rationale returned.</span>
+            )}
           </div>
         </article>
 
         <article className="soft-card">
-          <strong className="card-title">Policy reasoning</strong>
-          <ul className="reasoning-list">
-            {incident.policy_reasoning.map((reason) => (
-              <li key={reason}>{reason}</li>
-            ))}
-          </ul>
+          <strong className="card-title">Approval and response state</strong>
+          <div className="action-list">
+            {incident.action_results.map((action) => {
+              const canApprove = action.requires_approval && action.approval_state === "pending" && action.correlation_id;
+              return (
+                <div className="action-item" key={`${action.action}-${action.executed_at}-${action.status}`}>
+                  <div className="action-head">
+                    <span className="badge tone-sky">{actionLabel(action.action)}</span>
+                    <span className={`badge ${actionStatusTone(action.status)}`}>{statusLabel(action.status)}</span>
+                  </div>
+                  <p>{action.details}</p>
+                  {action.approval_reason ? <small className="action-meta">{action.approval_reason}</small> : null}
+                  {action.attempt_count > 0 || action.correlation_id ? (
+                    <small className="action-meta">
+                      {action.attempt_count > 0 ? `Attempt ${action.attempt_count}` : "Async action"}
+                      {action.correlation_id ? ` | ${action.correlation_id}` : ""}
+                      {action.approved_by ? ` | ${action.approved_by}` : ""}
+                    </small>
+                  ) : null}
+                  <small>{formatDateTime(action.executed_at)}</small>
+                  {canApprove ? (
+                    <div className="button-row">
+                      <button
+                        className="primary-button compact-button"
+                        onClick={() => onApproveAction(action.correlation_id!, "Approved from dashboard")}
+                        type="button"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        className="secondary-button compact-button"
+                        onClick={() => onRejectAction(action.correlation_id!, "Rejected from dashboard")}
+                        type="button"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </article>
+      </div>
+
+      <div className="detail-grid detail-grid-expanded">
+        <article className="soft-card">
+          <strong className="card-title">Hash intelligence</strong>
+          {hash ? (
+            <>
+              <div className="key-grid">
+                <div className="key-item">
+                  <span>Reputation</span>
+                  <strong>{titleCase(hash.reputation)}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Threat name</span>
+                  <strong>{present(hash.threat_name, "Unlabeled")}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Meaningful name</span>
+                  <strong>{present(hash.meaningful_name, "Not set")}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Source</span>
+                  <strong>{hash.source}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Vendor hits</span>
+                  <strong>{`${hash.malicious_vendors}/${hash.total_vendors}`}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Community score</span>
+                  <strong>{hash.community_reputation ?? "Not set"}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Last analysis</span>
+                  <strong>{hash.last_analysis_date ? formatDateTime(hash.last_analysis_date) : "Not set"}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Vendor split</span>
+                  <strong>{`S:${hash.suspicious_vendors} H:${hash.harmless_vendors} U:${hash.undetected_vendors}`}</strong>
+                </div>
+              </div>
+              <div className="stack-sm">
+                <strong className="subtle-title">Hash / permalink</strong>
+                <div className="code-card wrap-anywhere">{present(hash.hash_value, incident.alert.file_hash)}</div>
+                {hash.permalink ? (
+                  <a className="report-link wrap-link" href={hash.permalink} rel="noreferrer" target="_blank">
+                    Open VirusTotal file object
+                  </a>
+                ) : null}
+              </div>
+              <div className="stack-sm">
+                <strong className="subtle-title">Tags</strong>
+                {renderTagRow(hash.tags)}
+              </div>
+              <div className="stack-sm">
+                <strong className="subtle-title">Analysis stats</strong>
+                {renderAnalysisStats(hash.analysis_stats)}
+              </div>
+            </>
+          ) : (
+            <div className="empty-mini">
+              <strong>No hash enrichment returned.</strong>
+              <span>The alert did not produce file reputation telemetry.</span>
+            </div>
+          )}
+        </article>
+
+        <article className="soft-card">
+          <strong className="card-title">IP intelligence</strong>
+          {ip ? (
+            <>
+              <div className="key-grid">
+                <div className="key-item">
+                  <span>Reputation</span>
+                  <strong>{titleCase(ip.reputation)}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Confidence</span>
+                  <strong>{`${ip.confidence_score}/100`}</strong>
+                </div>
+                <div className="key-item">
+                  <span>C2 signal</span>
+                  <strong>{ip.is_c2 ? "Flagged" : "Not flagged"}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Source</span>
+                  <strong>{ip.source}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Country / ISP</span>
+                  <strong>{`${ip.country ?? "Unknown"} / ${ip.isp ?? "Unknown"}`}</strong>
+                </div>
+                <div className="key-item">
+                  <span>ASN / network</span>
+                  <strong>{`${ip.asn ?? "N/A"} / ${ip.network ?? "N/A"}`}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Community score</span>
+                  <strong>{ip.community_reputation ?? "Not set"}</strong>
+                </div>
+                <div className="key-item">
+                  <span>Vendor split</span>
+                  <strong>{`M:${ip.malicious_vendors} S:${ip.suspicious_vendors} H:${ip.harmless_vendors}`}</strong>
+                </div>
+              </div>
+              <div className="stack-sm">
+                <strong className="subtle-title">IP / permalink</strong>
+                <div className="code-card wrap-anywhere">{ip.ip_address}</div>
+                {ip.permalink ? (
+                  <a className="report-link wrap-link" href={ip.permalink} rel="noreferrer" target="_blank">
+                    Open VirusTotal IP object
+                  </a>
+                ) : null}
+              </div>
+              <div className="stack-sm">
+                <strong className="subtle-title">Tags</strong>
+                {renderTagRow(ip.tags)}
+              </div>
+              <div className="stack-sm">
+                <strong className="subtle-title">Analysis stats</strong>
+                {renderAnalysisStats(ip.analysis_stats)}
+              </div>
+            </>
+          ) : (
+            <div className="empty-mini">
+              <strong>No IP enrichment returned.</strong>
+              <span>The alert did not produce network reputation telemetry.</span>
+            </div>
+          )}
         </article>
       </div>
 
@@ -406,10 +761,12 @@ export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
                 <div className="queue-item execution-queue-item" key={request.correlation_id}>
                   <div className="action-head">
                     <span className="badge tone-sky">{actionLabel(request.action)}</span>
-                    <span className="badge tone-neutral">{present(request.queue_name)}</span>
+                    <span className={`badge ${request.requires_approval ? "tone-medium" : "tone-neutral"}`}>
+                      {request.requires_approval ? "Approval gated" : present(request.queue_name)}
+                    </span>
                   </div>
                   <p>{summarizeQueuedAction(request)}</p>
-                  <small className="mono">{request.correlation_id}</small>
+                  <small className="mono wrap-anywhere">{request.correlation_id}</small>
                   {request.correlation_hooks.length > 0 ? (
                     <small>
                       Hooks: {request.correlation_hooks.map((hook) => `${hook.field}=${hook.value}`).join(", ")}
@@ -425,7 +782,8 @@ export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
             </div>
           )}
         </article>
-        <article className="soft-card">
+
+        <article className="soft-card report-preview-card">
           <div className="report-head">
             <strong className="card-title">Report preview</strong>
             {reportUrl ? (
@@ -439,7 +797,9 @@ export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
               {reportArtifacts.map((artifact) => (
                 <div className="artifact-item" key={artifact.label}>
                   <span>{artifact.label}</span>
-                  <strong className="mono">{artifact.value}</strong>
+                  <strong className="mono artifact-value wrap-anywhere" title={artifact.value ?? undefined}>
+                    {artifact.value}
+                  </strong>
                 </div>
               ))}
             </div>
@@ -449,18 +809,59 @@ export function IncidentDetail({ incident, loading }: IncidentDetailProps) {
               <span>Enable report generation to publish Markdown, HTML, or PDF output.</span>
             </div>
           )}
-          {incident.report.markdown_content ? (
-            renderMarkdownPreview(incident.report.markdown_content)
-          ) : (
-            <div className="narrative-block">No report content available.</div>
-          )}
+          <div className="report-preview-body report-preview-body-expanded">
+            {incident.report.markdown_content ? (
+              renderMarkdownPreview(incident.report.markdown_content)
+            ) : (
+              <div className="narrative-block">No report content available.</div>
+            )}
+          </div>
         </article>
       </div>
 
-      <article className="soft-card">
-        <strong className="card-title">Raw alert payload</strong>
-        <pre className="raw-json">{JSON.stringify(incident.alert, null, 2)}</pre>
-      </article>
+      <div className="detail-grid detail-grid-tight">
+        <article className="soft-card">
+          <strong className="card-title">Audit timeline</strong>
+          <div className="timeline-list">
+            {incident.audit_events.length > 0 ? (
+              incident.audit_events.map((event) => (
+                <div className="timeline-item" key={event.event_id}>
+                  <div className="timeline-head">
+                    <strong>{titleCase(event.category.replace(/[._]/g, " "))}</strong>
+                    <small>{formatDateTime(event.created_at)}</small>
+                  </div>
+                  <p>{event.message}</p>
+                  <small className="action-meta">{event.actor}</small>
+                </div>
+              ))
+            ) : (
+              <div className="empty-mini">
+                <strong>No audit events yet.</strong>
+                <span>Workflow and analyst actions will accumulate here.</span>
+              </div>
+            )}
+          </div>
+        </article>
+        <article className="soft-card">
+          <strong className="card-title">Policy reasoning</strong>
+          <ul className="reasoning-list">
+            {incident.policy_reasoning.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        </article>
+      </div>
+
+      <div className="detail-grid detail-grid-code">
+        <article className="soft-card">
+          <strong className="card-title">Raw alert payload</strong>
+          <pre className="raw-json">{JSON.stringify(incident.alert, null, 2)}</pre>
+        </article>
+        <article className="soft-card">
+          <strong className="card-title">Workflow snapshot</strong>
+          <pre className="raw-json">{JSON.stringify(workflowSnapshot, null, 2)}</pre>
+        </article>
+      </div>
     </section>
   );
 }

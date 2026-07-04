@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, Sequence
 
@@ -43,6 +44,7 @@ class ActionDispatcher:
         self._config = config
         self._action_executor = action_executor
         self._queue_publisher = queue_publisher
+        self._approval_required_actions = self._load_approval_required_actions()
 
     def dispatch(
         self,
@@ -118,11 +120,22 @@ class ActionDispatcher:
             action_results=[
                 ActionResult(
                     action=request.action,
-                    status="queued",
+                    status="waiting_approval" if request.requires_approval else "queued",
                     executed_at=utc_now(),
+                    correlation_id=request.correlation_id,
+                    requires_approval=request.requires_approval,
+                    approval_state=request.approval_state,
+                    approval_reason=request.approval_reason,
                     details=(
-                        f"Queued '{request.action.value}' to '{request.queue_name}' "
-                        f"(correlation_id={request.correlation_id})."
+                        (
+                            f"Queued '{request.action.value}' to '{request.queue_name}' "
+                            f"pending analyst approval (correlation_id={request.correlation_id})."
+                        )
+                        if request.requires_approval
+                        else (
+                            f"Queued '{request.action.value}' to '{request.queue_name}' "
+                            f"(correlation_id={request.correlation_id})."
+                        )
                     ),
                 )
                 for request in queued_actions
@@ -161,6 +174,13 @@ class ActionDispatcher:
             deduplication_key=correlation_root,
             correlation_hooks=self._build_correlation_hooks(enriched),
             payload=self._build_payload(action, enriched),
+            requires_approval=action in self._approval_required_actions,
+            approval_state=(
+                "pending"
+                if action in self._approval_required_actions
+                else "not_required"
+            ),
+            approval_reason=self._approval_reason(action, enriched),
         )
 
     def _build_correlation_hooks(
@@ -217,3 +237,37 @@ class ActionDispatcher:
             )
 
         return payload
+
+    @staticmethod
+    def _load_approval_required_actions() -> set[ResponseAction]:
+        raw_actions = os.getenv(
+            "SOAR_APPROVAL_REQUIRED_ACTIONS",
+            "",
+        )
+        actions: set[ResponseAction] = set()
+        for raw_action in raw_actions.split(","):
+            candidate = raw_action.strip().lower()
+            if not candidate:
+                continue
+            try:
+                actions.add(ResponseAction(candidate))
+            except ValueError:
+                logger.warning("[PolicyEngine] Ignoring unknown approval-gated action '{}'.", candidate)
+        return actions
+
+    @staticmethod
+    def _approval_reason(
+        action: ResponseAction,
+        enriched: EnrichedAlert,
+    ) -> str | None:
+        if action == ResponseAction.ISOLATE_HOST:
+            return (
+                f"Host isolation impacts endpoint connectivity on '{enriched.original_alert.hostname}'."
+            )
+        if action == ResponseAction.KILL_PROCESS:
+            return (
+                f"Process termination may disrupt user workflow for '{enriched.original_alert.process_name}'."
+            )
+        if action == ResponseAction.BLOCK_IP:
+            return f"Blocking '{enriched.original_alert.destination_ip}' changes outbound network policy."
+        return None

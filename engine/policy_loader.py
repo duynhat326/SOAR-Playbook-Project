@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -266,7 +267,7 @@ def load_policy_config(path: Optional[Path] = None) -> PolicyConfig:
     config_path = Path(path or DEFAULT_POLICY_PATH)
 
     try:
-        raw_data = _read_policy_file(config_path)
+        raw_data = _apply_environment_overrides(_read_policy_file(config_path))
         config = PolicyConfig.model_validate(raw_data)
         logger.debug(f"[PolicyConfig] Loaded {len(config.rules)} rule(s) from {config_path}")
         return config
@@ -275,7 +276,7 @@ def load_policy_config(path: Optional[Path] = None) -> PolicyConfig:
             f"[PolicyConfig] Failed to load policy config from {config_path}: {exc}. "
             "Falling back to built-in defaults."
         )
-        return PolicyConfig.model_validate(DEFAULT_POLICY_CONFIG)
+        return PolicyConfig.model_validate(_apply_environment_overrides(DEFAULT_POLICY_CONFIG))
 
 
 def _read_policy_file(path: Path) -> dict[str, Any]:
@@ -289,4 +290,28 @@ def _read_policy_file(path: Path) -> dict[str, Any]:
             "PolicyConfig",
             [{"type": "model_type", "loc": (), "msg": "Policy config must be a mapping", "input": data}],
         )
+    return data
+
+
+def _apply_environment_overrides(raw_data: dict[str, Any]) -> dict[str, Any]:
+    data = yaml.safe_load(yaml.safe_dump(raw_data, sort_keys=False)) or {}
+    execution = data.setdefault("execution", {})
+    queue = execution.setdefault("queue", {})
+
+    mode = os.getenv("SOAR_POLICY_EXECUTION_MODE")
+    if mode:
+        execution["mode"] = mode.strip().lower()
+
+    queue_name = os.getenv("SOAR_POLICY_QUEUE_NAME")
+    if queue_name:
+        queue["queue_name"] = queue_name.strip()
+
+    correlation_prefix = os.getenv("SOAR_POLICY_CORRELATION_PREFIX")
+    if correlation_prefix:
+        queue["correlation_prefix"] = correlation_prefix.strip()
+
+    fallback_to_sync = os.getenv("SOAR_POLICY_QUEUE_FALLBACK_TO_SYNC")
+    if fallback_to_sync:
+        queue["fallback_to_sync"] = fallback_to_sync.strip().lower() in {"1", "true", "yes", "on"}
+
     return data

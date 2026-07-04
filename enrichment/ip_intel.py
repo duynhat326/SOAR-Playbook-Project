@@ -9,6 +9,7 @@ IP reputation providers.
 
 import json
 import random
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -70,6 +71,13 @@ def _infer_c2_signal(attributes: dict) -> bool:
     return False
 
 
+def _extract_analysis_date(attributes: dict) -> Optional[datetime]:
+    raw_timestamp = attributes.get("last_analysis_date")
+    if isinstance(raw_timestamp, int) and raw_timestamp > 0:
+        return datetime.fromtimestamp(raw_timestamp, UTC)
+    return None
+
+
 class VirusTotalIPIntel(BaseIPIntel):
     """Live IP reputation lookup using VirusTotal API v3."""
 
@@ -95,6 +103,15 @@ class VirusTotalIPIntel(BaseIPIntel):
                 is_c2=False,
                 country="PRIVATE",
                 isp="Internal Network",
+                malicious_vendors=0,
+                suspicious_vendors=0,
+                harmless_vendors=0,
+                undetected_vendors=0,
+                tags=[],
+                analysis_stats={},
+                community_reputation=None,
+                last_analysis_date=None,
+                permalink=None,
                 source="private_network",
             )
 
@@ -107,6 +124,15 @@ class VirusTotalIPIntel(BaseIPIntel):
                 reputation=IPReputation.UNKNOWN,
                 confidence_score=0,
                 is_c2=False,
+                malicious_vendors=0,
+                suspicious_vendors=0,
+                harmless_vendors=0,
+                undetected_vendors=0,
+                tags=[],
+                analysis_stats={},
+                community_reputation=None,
+                last_analysis_date=None,
+                permalink=f"https://www.virustotal.com/gui/ip-address/{ip_address}",
                 source="virustotal_api_v3",
             )
 
@@ -123,6 +149,33 @@ class VirusTotalIPIntel(BaseIPIntel):
             is_c2=_infer_c2_signal(attributes),
             country=attributes.get("country"),
             isp=attributes.get("as_owner"),
+            asn=(
+                int(attributes.get("asn"))
+                if isinstance(attributes.get("asn"), int)
+                else None
+            ),
+            network=(
+                str(attributes.get("network"))
+                if attributes.get("network")
+                else None
+            ),
+            malicious_vendors=malicious,
+            suspicious_vendors=suspicious,
+            harmless_vendors=int(stats.get("harmless", 0) or 0),
+            undetected_vendors=int(stats.get("undetected", 0) or 0),
+            tags=[str(tag) for tag in (attributes.get("tags") or [])],
+            analysis_stats={
+                str(key): int(value or 0)
+                for key, value in stats.items()
+                if isinstance(value, int)
+            },
+            community_reputation=(
+                int(attributes.get("reputation"))
+                if isinstance(attributes.get("reputation"), int)
+                else None
+            ),
+            last_analysis_date=_extract_analysis_date(attributes),
+            permalink=f"https://www.virustotal.com/gui/ip-address/{ip_address}",
             source="virustotal_api_v3",
         )
         logger.debug(
@@ -197,6 +250,15 @@ class MockIPIntel(BaseIPIntel):
                 is_c2=False,
                 country="PRIVATE",
                 isp="Internal Network",
+                malicious_vendors=0,
+                suspicious_vendors=0,
+                harmless_vendors=0,
+                undetected_vendors=0,
+                tags=[],
+                analysis_stats={},
+                community_reputation=None,
+                last_analysis_date=None,
+                permalink=None,
                 source="mock_abuseipdb"
             )
 
@@ -209,6 +271,15 @@ class MockIPIntel(BaseIPIntel):
                 reputation=IPReputation.UNKNOWN,
                 confidence_score=0,
                 is_c2=False,
+                malicious_vendors=0,
+                suspicious_vendors=0,
+                harmless_vendors=0,
+                undetected_vendors=0,
+                tags=[],
+                analysis_stats={},
+                community_reputation=None,
+                last_analysis_date=None,
+                permalink=None,
                 source="mock_abuseipdb"
             )
 
@@ -225,6 +296,22 @@ class MockIPIntel(BaseIPIntel):
             is_c2=record.get("is_c2", False),
             country=record.get("country"),
             isp=record.get("isp"),
+            asn=record.get("asn"),
+            network=record.get("network"),
+            malicious_vendors=record.get("malicious_vendors", 0),
+            suspicious_vendors=record.get("suspicious_vendors", 0),
+            harmless_vendors=record.get("harmless_vendors", 0),
+            undetected_vendors=record.get("undetected_vendors", 0),
+            tags=[str(tag) for tag in record.get("tags", [])],
+            analysis_stats={
+                "malicious": int(record.get("malicious_vendors", 0) or 0),
+                "suspicious": int(record.get("suspicious_vendors", 0) or 0),
+                "harmless": int(record.get("harmless_vendors", 0) or 0),
+                "undetected": int(record.get("undetected_vendors", 0) or 0),
+            },
+            community_reputation=record.get("community_reputation"),
+            last_analysis_date=None,
+            permalink=record.get("permalink"),
             source="mock_abuseipdb"
         )
 
@@ -267,6 +354,17 @@ class RandomIPIntel(BaseIPIntel):
                 is_c2=True,
                 country=random.choice(self._FAKE_COUNTRIES),
                 isp="Bulletproof Hosting LLC",
+                asn=64512,
+                network="185.220.101.0/24",
+                malicious_vendors=random.randint(10, 20),
+                suspicious_vendors=random.randint(0, 4),
+                harmless_vendors=random.randint(0, 2),
+                undetected_vendors=random.randint(10, 20),
+                tags=["c2", "botnet"],
+                analysis_stats={},
+                community_reputation=random.randint(-20, -1),
+                last_analysis_date=None,
+                permalink=None,
                 source="mock_abuseipdb_random"
             )
         elif roll < 0.40:
@@ -277,6 +375,17 @@ class RandomIPIntel(BaseIPIntel):
                 is_c2=False,
                 country=random.choice(self._FAKE_COUNTRIES),
                 isp="Unknown ISP",
+                asn=64513,
+                network="45.142.212.0/24",
+                malicious_vendors=random.randint(5, 15),
+                suspicious_vendors=random.randint(2, 5),
+                harmless_vendors=random.randint(0, 2),
+                undetected_vendors=random.randint(10, 25),
+                tags=["malicious"],
+                analysis_stats={},
+                community_reputation=random.randint(-8, 2),
+                last_analysis_date=None,
+                permalink=None,
                 source="mock_abuseipdb_random"
             )
         else:
@@ -287,5 +396,16 @@ class RandomIPIntel(BaseIPIntel):
                 is_c2=False,
                 country="US",
                 isp="Cloudflare Inc.",
+                asn=13335,
+                network="104.16.0.0/12",
+                malicious_vendors=0,
+                suspicious_vendors=0,
+                harmless_vendors=random.randint(20, 40),
+                undetected_vendors=random.randint(10, 25),
+                tags=[],
+                analysis_stats={},
+                community_reputation=random.randint(0, 10),
+                last_analysis_date=None,
+                permalink=None,
                 source="mock_abuseipdb_random"
             )

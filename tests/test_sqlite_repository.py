@@ -128,3 +128,67 @@ def test_sqlite_repository_rejects_invalid_incident_list_limit(tmp_path):
     with pytest.raises(ValueError) as oversized_limit:
         repository.list_incidents(limit=MAX_INCIDENT_LIST_LIMIT + 1)
     assert str(MAX_INCIDENT_LIST_LIMIT) in str(oversized_limit.value)
+
+
+def test_sqlite_repository_migrates_legacy_incident_table_before_creating_indexes(tmp_path):
+    db_path = tmp_path / "legacy.db"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE alerts (
+                alert_id TEXT PRIMARY KEY,
+                hostname TEXT NOT NULL,
+                username TEXT NOT NULL,
+                process_name TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                parent_process TEXT NOT NULL,
+                command_line TEXT NOT NULL,
+                destination_ip TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                detection_name TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                raw_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_id TEXT NOT NULL UNIQUE,
+                hostname TEXT NOT NULL,
+                detection_name TEXT NOT NULL,
+                risk_score REAL NOT NULL,
+                risk_level TEXT NOT NULL,
+                ticket_id TEXT,
+                status TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                report_path TEXT,
+                triggered_actions_json TEXT NOT NULL,
+                policy_reasoning_json TEXT NOT NULL,
+                enriched_json TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(alert_id) REFERENCES alerts(alert_id) ON DELETE CASCADE
+            );
+            """
+        )
+
+    repository = SQLiteIncidentRepository(db_path=db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(incidents)").fetchall()
+        }
+        indexes = {
+            row[1]
+            for row in conn.execute("PRAGMA index_list(incidents)").fetchall()
+        }
+
+    assert repository.db_path == db_path
+    assert "case_status" in columns
+    assert "case_owner" in columns
+    assert "idx_incidents_case_status" in indexes

@@ -29,10 +29,17 @@ from a2a.schemas import (
 )
 from a2a.service import A2AService
 from api.schemas import (
+    ActionApprovalRequest,
+    BulkIncidentUpdateRequest,
     DashboardBootstrapResponse,
     DashboardSampleOptionResponse,
     DashboardScenarioOptionResponse,
+    IncidentCaseUpdateRequest,
+    IncidentNoteCreateRequest,
     IncidentRecordResponse,
+    ReadinessResponse,
+    SavedFilterCreateRequest,
+    SavedFilterResponse,
     IncidentSummaryResponse,
     ProcessAlertRequest,
     ProcessIncidentResponse,
@@ -105,6 +112,10 @@ def _require_bound_principal(principal: AuthenticatedPrincipal) -> Authenticated
     if not isinstance(principal, AuthenticatedPrincipal):
         raise HTTPException(status_code=401, detail="Authenticated principal is required.")
     return principal
+
+
+def _principal_actor(principal: AuthenticatedPrincipal) -> str:
+    return principal.agent_id or principal.principal_id
 
 
 def _get_incident_or_404(alert_id: str) -> dict[str, Any]:
@@ -250,6 +261,14 @@ def health() -> dict[str, str]:
     }
 
 
+@app.get("/api/v1/ready", response_model=ReadinessResponse)
+def readiness(
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_READ, ROLE_INCIDENT_PROCESS)),
+) -> ReadinessResponse:
+    principal = _require_bound_principal(principal)
+    return ReadinessResponse.model_validate(get_workflow_service().get_readiness())
+
+
 @app.get("/api/v1/dashboard/bootstrap", response_model=DashboardBootstrapResponse)
 def dashboard_bootstrap(
     principal: AuthenticatedPrincipal = Depends(
@@ -300,6 +319,8 @@ def list_incidents(
     risk_level: Optional[str] = None,
     hostname: Optional[str] = None,
     ticket_id: Optional[str] = None,
+    case_status: Optional[str] = None,
+    case_owner: Optional[str] = None,
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_READ)),
 ) -> list[IncidentSummaryResponse]:
     principal = _require_bound_principal(principal)
@@ -309,8 +330,48 @@ def list_incidents(
         risk_level=risk_level,
         hostname=hostname,
         ticket_id=ticket_id,
+        case_status=case_status,
+        case_owner=case_owner,
     )
     return [IncidentSummaryResponse.model_validate(item) for item in incidents]
+
+
+@app.post("/api/v1/incidents/bulk-update", response_model=list[IncidentRecordResponse])
+def bulk_update_incidents(
+    request: BulkIncidentUpdateRequest,
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
+) -> list[IncidentRecordResponse]:
+    principal = _require_bound_principal(principal)
+    incidents = get_workflow_service().bulk_update_incidents(
+        request.alert_ids,
+        case_status=request.case_status,
+        case_owner=request.case_owner,
+        actor=_principal_actor(principal),
+        comment=request.comment,
+    )
+    return [IncidentRecordResponse.model_validate(incident) for incident in incidents]
+
+
+@app.get("/api/v1/incidents/saved-filters", response_model=list[SavedFilterResponse])
+def list_saved_filters(
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_READ)),
+) -> list[SavedFilterResponse]:
+    principal = _require_bound_principal(principal)
+    return [SavedFilterResponse.model_validate(item) for item in get_workflow_service().list_saved_filters()]
+
+
+@app.post("/api/v1/incidents/saved-filters", response_model=SavedFilterResponse)
+def save_filter(
+    request: SavedFilterCreateRequest,
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
+) -> SavedFilterResponse:
+    principal = _require_bound_principal(principal)
+    saved = get_workflow_service().save_filter(
+        name=request.name,
+        filters=request.filters,
+        created_by=request.created_by or _principal_actor(principal),
+    )
+    return SavedFilterResponse.model_validate(saved)
 
 
 @app.get("/api/v1/incidents/by-alert/{alert_id}", response_model=IncidentRecordResponse)
@@ -326,6 +387,92 @@ def get_incident_by_alert_id(
         principal=principal,
         include_sensitive=include_sensitive,
     )
+
+
+@app.patch("/api/v1/incidents/by-alert/{alert_id}", response_model=IncidentRecordResponse)
+def update_incident_case(
+    alert_id: str,
+    request: IncidentCaseUpdateRequest,
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
+) -> IncidentRecordResponse:
+    principal = _require_bound_principal(principal)
+    incident = get_workflow_service().update_incident_case(
+        alert_id,
+        case_status=request.case_status,
+        case_owner=request.case_owner,
+        actor=_principal_actor(principal),
+        comment=request.comment,
+    )
+    if incident is None:
+        raise HTTPException(status_code=404, detail=f"Incident not found for alert_id={alert_id}")
+    return IncidentRecordResponse.model_validate(incident)
+
+
+@app.post("/api/v1/incidents/by-alert/{alert_id}/notes")
+def add_incident_note(
+    alert_id: str,
+    request: IncidentNoteCreateRequest,
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
+) -> dict[str, Any]:
+    principal = _require_bound_principal(principal)
+    note = get_workflow_service().add_incident_note(
+        alert_id,
+        author=request.author or _principal_actor(principal),
+        body=request.body,
+    )
+    if note is None:
+        raise HTTPException(status_code=404, detail=f"Incident not found for alert_id={alert_id}")
+    return note
+
+
+@app.post("/api/v1/incidents/by-alert/{alert_id}/actions/{correlation_id}/approve", response_model=IncidentRecordResponse)
+def approve_action(
+    alert_id: str,
+    correlation_id: str,
+    request: ActionApprovalRequest,
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
+) -> IncidentRecordResponse:
+    principal = _require_bound_principal(principal)
+    try:
+        incident = get_workflow_service().approve_action(
+            alert_id,
+            correlation_id,
+            actor=request.actor or _principal_actor(principal),
+            comment=request.comment,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if incident is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Queued action not found for alert_id={alert_id} correlation_id={correlation_id}",
+        )
+    return IncidentRecordResponse.model_validate(incident)
+
+
+@app.post("/api/v1/incidents/by-alert/{alert_id}/actions/{correlation_id}/reject", response_model=IncidentRecordResponse)
+def reject_action(
+    alert_id: str,
+    correlation_id: str,
+    request: ActionApprovalRequest,
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
+) -> IncidentRecordResponse:
+    principal = _require_bound_principal(principal)
+    try:
+        incident = get_workflow_service().reject_action(
+            alert_id,
+            correlation_id,
+            actor=request.actor or _principal_actor(principal),
+            comment=request.comment,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if incident is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Queued action not found for alert_id={alert_id} correlation_id={correlation_id}",
+        )
+    return IncidentRecordResponse.model_validate(incident)
 
 
 @app.get("/api/v1/incidents/by-alert/{alert_id}/report/html")

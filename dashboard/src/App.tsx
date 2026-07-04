@@ -4,21 +4,33 @@ import { IncidentDetail } from "./components/IncidentDetail";
 import { IncidentTable } from "./components/IncidentTable";
 import { IntakePanel } from "./components/IntakePanel";
 import { MetricStrip } from "./components/MetricStrip";
-import { formatDateTime, formatRelativeTime } from "./lib/format";
+import { formatDateTime, formatRelativeTime, titleCase } from "./lib/format";
 import {
+  addIncidentNote,
+  approveAction,
+  bulkUpdateIncidents,
   getFallbackDashboardBootstrap,
   getIncident,
+  getReadiness,
   listIncidents,
+  listSavedFilters,
   loadDashboardBootstrap,
   processAlert,
+  rejectAction,
+  saveFilter,
+  updateIncidentCase,
 } from "./services/soarApi";
 import type {
+  ActionExecutionStatus,
   ApiMode,
   DashboardBootstrap,
+  IncidentCaseStatus,
   IncidentRecord,
   IncidentSummary,
   ProcessAlertInput,
+  ReadinessState,
   RiskLevel,
+  SavedFilter,
 } from "./types";
 
 interface BannerState {
@@ -26,15 +38,66 @@ interface BannerState {
   message: string;
 }
 
+interface RefreshOptions {
+  silent?: boolean;
+}
+
+const DEFAULT_ANALYST = "dashboard-analyst";
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unexpected dashboard error.";
 }
 
+function isLiveActionStatus(status: ActionExecutionStatus): boolean {
+  return status === "queued" || status === "waiting_approval" || status === "running";
+}
+
+function compareIncidents(left: IncidentSummary, right: IncidentSummary): number {
+  const approvalDelta = right.pending_approval_count - left.pending_approval_count;
+  if (approvalDelta !== 0) {
+    return approvalDelta;
+  }
+
+  const activeDelta = right.active_action_count - left.active_action_count;
+  if (activeDelta !== 0) {
+    return activeDelta;
+  }
+
+  const failedDelta = right.failed_action_count - left.failed_action_count;
+  if (failedDelta !== 0) {
+    return failedDelta;
+  }
+
+  const riskDelta = right.risk_score - left.risk_score;
+  if (riskDelta !== 0) {
+    return riskDelta;
+  }
+
+  return right.completed_at.localeCompare(left.completed_at);
+}
+
 function sortIncidents(items: IncidentSummary[]): IncidentSummary[] {
-  return [...items].sort((left, right) => right.completed_at.localeCompare(left.completed_at));
+  return [...items].sort(compareIncidents);
+}
+
+function summarizeActionCounts(incident: IncidentRecord) {
+  const queued_action_count = incident.action_results.filter((action) => action.status === "queued").length;
+  const pending_approval_count = incident.action_results.filter((action) => action.status === "waiting_approval").length;
+  const running_action_count = incident.action_results.filter((action) => action.status === "running").length;
+  const failed_action_count = incident.action_results.filter((action) => action.status === "failed").length;
+  const succeeded_action_count = incident.action_results.filter((action) => action.status === "succeeded").length;
+  return {
+    queued_action_count,
+    pending_approval_count,
+    running_action_count,
+    failed_action_count,
+    succeeded_action_count,
+    active_action_count: queued_action_count + pending_approval_count + running_action_count,
+  };
 }
 
 function toIncidentSummary(incident: IncidentRecord): IncidentSummary {
+  const actionCounts = summarizeActionCounts(incident);
   return {
     id: incident.id,
     alert_id: incident.alert_id,
@@ -49,6 +112,15 @@ function toIncidentSummary(incident: IncidentRecord): IncidentSummary {
     status: incident.status,
     completed_at: incident.completed_at,
     report_path: incident.report_path,
+    case_status: incident.case_status,
+    case_owner: incident.case_owner,
+    queued_action_count: incident.queued_action_count ?? actionCounts.queued_action_count,
+    pending_approval_count: incident.pending_approval_count ?? actionCounts.pending_approval_count,
+    running_action_count: incident.running_action_count ?? actionCounts.running_action_count,
+    failed_action_count: incident.failed_action_count ?? actionCounts.failed_action_count,
+    succeeded_action_count: incident.succeeded_action_count ?? actionCounts.succeeded_action_count,
+    active_action_count: incident.active_action_count ?? actionCounts.active_action_count,
+    note_count: incident.note_count ?? incident.notes.length,
   };
 }
 
@@ -58,8 +130,20 @@ function upsertIncidentSummary(current: IncidentSummary[], incoming: IncidentSum
   return sortIncidents(next);
 }
 
+function currentFilterSnapshot(
+  search: string,
+  riskFilter: RiskLevel | "all",
+  caseFilter: IncidentCaseStatus | "all",
+): Record<string, unknown> {
+  return {
+    search,
+    risk_level: riskFilter,
+    case_status: caseFilter,
+  };
+}
+
 export default function App() {
-  const [apiMode, setApiMode] = useState<ApiMode>("mock");
+  const [apiMode, setApiMode] = useState<ApiMode>("offline");
   const [bootstrap, setBootstrap] = useState<DashboardBootstrap>(getFallbackDashboardBootstrap());
   const [incidents, setIncidents] = useState<IncidentSummary[]>([]);
   const [incidentDetails, setIncidentDetails] = useState<Record<string, IncidentRecord>>({});
@@ -70,12 +154,51 @@ export default function App() {
   const [processing, setProcessing] = useState(false);
   const [search, setSearch] = useState("");
   const [riskFilter, setRiskFilter] = useState<RiskLevel | "all">("all");
+  const [caseFilter, setCaseFilter] = useState<IncidentCaseStatus | "all">("all");
+  const [selectedRows, setSelectedRows] = useState<string[]>([]);
   const [banner, setBanner] = useState<BannerState | null>(null);
+  const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
+  const [readiness, setReadiness] = useState<ReadinessState | null>(null);
 
   const deferredSearch = useDeferredValue(search);
 
-  async function refreshIncidents(preferredAlertId?: string | null, preferredIncident?: IncidentRecord | null) {
-    setListLoading(true);
+  async function refreshReadiness() {
+    try {
+      const result = await getReadiness();
+      startTransition(() => {
+        setApiMode(result.mode);
+        setReadiness(result.readiness);
+      });
+    } catch (error) {
+      startTransition(() => {
+        setBanner({ tone: "error", message: errorMessage(error) });
+      });
+    }
+  }
+
+  async function refreshSavedFilters() {
+    try {
+      const result = await listSavedFilters();
+      startTransition(() => {
+        setApiMode(result.mode);
+        setSavedFilters(result.filters);
+      });
+    } catch (error) {
+      startTransition(() => {
+        setBanner({ tone: "error", message: errorMessage(error) });
+      });
+    }
+  }
+
+  async function refreshIncidents(
+    preferredAlertId?: string | null,
+    preferredIncident?: IncidentRecord | null,
+    options?: RefreshOptions,
+  ) {
+    if (!options?.silent) {
+      setListLoading(true);
+    }
+
     try {
       const result = await listIncidents();
       const sortedIncidents = preferredIncident
@@ -90,67 +213,84 @@ export default function App() {
             ? preferredAlertId
             : sortedIncidents[0]?.alert_id ?? null;
         setSelectedAlertId(nextSelected);
-        setListLoading(false);
+        setSelectedRows((current) => current.filter((alertId) => sortedIncidents.some((incident) => incident.alert_id === alertId)));
+        if (!options?.silent) {
+          setListLoading(false);
+        }
       });
     } catch (error) {
       startTransition(() => {
-        setListLoading(false);
+        setApiMode("offline");
+        if (!options?.silent) {
+          setListLoading(false);
+        }
+        setBanner({ tone: "error", message: errorMessage(error) });
+      });
+    }
+  }
+
+  async function refreshSelectedIncident(alertId: string, options?: RefreshOptions) {
+    if (!options?.silent) {
+      setDetailLoading(true);
+    }
+
+    try {
+      const result = await getIncident(alertId);
+      const incident = result.incident;
+
+      startTransition(() => {
+        setApiMode(result.mode);
+        setSelectedIncident(incident);
+        if (incident) {
+          setIncidents((current) => upsertIncidentSummary(current, toIncidentSummary(incident)));
+          setIncidentDetails((current) => ({
+            ...current,
+            [incident.alert_id]: incident,
+          }));
+        }
+        if (!options?.silent) {
+          setDetailLoading(false);
+        }
+      });
+    } catch (error) {
+      startTransition(() => {
+        setApiMode("offline");
+        if (!options?.silent) {
+          setDetailLoading(false);
+        }
         setBanner({ tone: "error", message: errorMessage(error) });
       });
     }
   }
 
   useEffect(() => {
-    async function loadBootstrap() {
+    async function loadInitialState() {
       try {
-        const result = await loadDashboardBootstrap();
+        const bootstrapResult = await loadDashboardBootstrap();
         startTransition(() => {
-          setApiMode(result.mode);
-          setBootstrap(result.bootstrap);
+          setApiMode(bootstrapResult.mode);
+          setBootstrap(bootstrapResult.bootstrap);
         });
       } catch (error) {
         startTransition(() => {
+          setApiMode("offline");
           setBanner({ tone: "error", message: errorMessage(error) });
         });
       }
+
+      await Promise.all([refreshIncidents(), refreshReadiness(), refreshSavedFilters()]);
     }
 
-    void loadBootstrap();
-    void refreshIncidents();
+    void loadInitialState();
   }, []);
 
   useEffect(() => {
-    async function loadSelectedIncident() {
-      if (!selectedAlertId) {
-        setSelectedIncident(null);
-        return;
-      }
-
-      setDetailLoading(true);
-      try {
-        const result = await getIncident(selectedAlertId);
-
-        startTransition(() => {
-          setApiMode(result.mode);
-          setSelectedIncident(result.incident);
-          if (result.incident) {
-            const incident = result.incident;
-            setIncidentDetails((current) => ({
-              ...current,
-              [incident.alert_id]: incident,
-            }));
-          }
-          setDetailLoading(false);
-        });
-      } catch (error) {
-        startTransition(() => {
-          setDetailLoading(false);
-          setBanner({ tone: "error", message: errorMessage(error) });
-        });
-      }
+    if (!selectedAlertId) {
+      setSelectedIncident(null);
+      return;
     }
 
-    void loadSelectedIncident();
+    void refreshSelectedIncident(selectedAlertId);
   }, [selectedAlertId]);
 
   async function handleProcess(input: ProcessAlertInput) {
@@ -173,9 +313,13 @@ export default function App() {
         });
       });
 
-      await refreshIncidents(result.incident.alert_id, result.incident);
+      await Promise.all([
+        refreshIncidents(result.incident.alert_id, result.incident, { silent: true }),
+        refreshReadiness(),
+      ]);
     } catch (error) {
       startTransition(() => {
+        setApiMode("offline");
         setBanner({ tone: "error", message: errorMessage(error) });
       });
       throw error;
@@ -184,14 +328,174 @@ export default function App() {
     }
   }
 
+  async function handleUpdateCase(payload: { case_status?: string; case_owner?: string; comment?: string }) {
+    if (!selectedAlertId) {
+      return;
+    }
+    try {
+      const result = await updateIncidentCase(selectedAlertId, payload);
+      startTransition(() => {
+        setApiMode(result.mode);
+        setSelectedIncident(result.incident);
+        setIncidentDetails((current) => ({
+          ...current,
+          [result.incident.alert_id]: result.incident,
+        }));
+        setIncidents((current) => upsertIncidentSummary(current, toIncidentSummary(result.incident)));
+        setBanner({ tone: "success", message: `Updated case ${result.incident.alert_id}.` });
+      });
+    } catch (error) {
+      startTransition(() => setBanner({ tone: "error", message: errorMessage(error) }));
+    }
+  }
+
+  async function handleAddNote(body: string) {
+    if (!selectedAlertId) {
+      return;
+    }
+    try {
+      await addIncidentNote(selectedAlertId, { author: DEFAULT_ANALYST, body });
+      await refreshSelectedIncident(selectedAlertId, { silent: true });
+      startTransition(() => {
+        setBanner({ tone: "success", message: `Added note to ${selectedAlertId}.` });
+      });
+    } catch (error) {
+      startTransition(() => setBanner({ tone: "error", message: errorMessage(error) }));
+    }
+  }
+
+  async function handleApproveAction(correlationId: string, comment?: string) {
+    if (!selectedAlertId) {
+      return;
+    }
+    try {
+      const result = await approveAction(selectedAlertId, correlationId, { actor: DEFAULT_ANALYST, comment });
+      startTransition(() => {
+        setApiMode(result.mode);
+        setSelectedIncident(result.incident);
+        setIncidentDetails((current) => ({
+          ...current,
+          [result.incident.alert_id]: result.incident,
+        }));
+        setIncidents((current) => upsertIncidentSummary(current, toIncidentSummary(result.incident)));
+        setBanner({ tone: "success", message: `Approved action ${correlationId}.` });
+      });
+      await refreshReadiness();
+    } catch (error) {
+      startTransition(() => setBanner({ tone: "error", message: errorMessage(error) }));
+    }
+  }
+
+  async function handleRejectAction(correlationId: string, comment?: string) {
+    if (!selectedAlertId) {
+      return;
+    }
+    try {
+      const result = await rejectAction(selectedAlertId, correlationId, { actor: DEFAULT_ANALYST, comment });
+      startTransition(() => {
+        setApiMode(result.mode);
+        setSelectedIncident(result.incident);
+        setIncidentDetails((current) => ({
+          ...current,
+          [result.incident.alert_id]: result.incident,
+        }));
+        setIncidents((current) => upsertIncidentSummary(current, toIncidentSummary(result.incident)));
+        setBanner({ tone: "success", message: `Rejected action ${correlationId}.` });
+      });
+      await refreshReadiness();
+    } catch (error) {
+      startTransition(() => setBanner({ tone: "error", message: errorMessage(error) }));
+    }
+  }
+
+  async function handleBulkUpdate(payload: { case_status?: string; case_owner?: string; comment?: string }) {
+    if (selectedRows.length === 0) {
+      return;
+    }
+    try {
+      const result = await bulkUpdateIncidents({
+        alert_ids: selectedRows,
+        case_status: payload.case_status,
+        case_owner: payload.case_owner,
+        comment: payload.comment,
+      });
+      startTransition(() => {
+        setApiMode(result.mode);
+        setIncidentDetails((current) => {
+          const next = { ...current };
+          result.incidents.forEach((incident) => {
+            next[incident.alert_id] = incident;
+          });
+          return next;
+        });
+        setIncidents((current) =>
+          sortIncidents(
+            result.incidents.reduce(
+              (next, incident) => upsertIncidentSummary(next, toIncidentSummary(incident)),
+              current,
+            ),
+          ),
+        );
+        if (selectedAlertId) {
+          const refreshedSelected = result.incidents.find((incident) => incident.alert_id === selectedAlertId);
+          if (refreshedSelected) {
+            setSelectedIncident(refreshedSelected);
+          }
+        }
+        setBanner({ tone: "success", message: `Bulk updated ${result.incidents.length} incident(s).` });
+      });
+    } catch (error) {
+      startTransition(() => setBanner({ tone: "error", message: errorMessage(error) }));
+    }
+  }
+
+  async function handleSaveCurrentFilter() {
+    const name = window.prompt("Saved filter name", `filter-${Date.now()}`);
+    if (!name) {
+      return;
+    }
+    try {
+      const result = await saveFilter(name, DEFAULT_ANALYST, currentFilterSnapshot(search, riskFilter, caseFilter));
+      startTransition(() => {
+        setApiMode(result.mode);
+        setSavedFilters((current) => [result.filter, ...current.filter((item) => item.id !== result.filter.id)]);
+        setBanner({ tone: "success", message: `Saved filter '${result.filter.name}'.` });
+      });
+    } catch (error) {
+      startTransition(() => setBanner({ tone: "error", message: errorMessage(error) }));
+    }
+  }
+
+  function applySavedFilter(filter: SavedFilter) {
+    const nextSearch = typeof filter.filters.search === "string" ? filter.filters.search : "";
+    const nextRisk = filter.filters.risk_level;
+    const nextCase = filter.filters.case_status;
+    startTransition(() => {
+      setSearch(nextSearch);
+      setRiskFilter(nextRisk === "critical" || nextRisk === "high" || nextRisk === "medium" || nextRisk === "low" ? nextRisk : "all");
+      setCaseFilter(
+        nextCase === "new" ||
+          nextCase === "triaged" ||
+          nextCase === "in_progress" ||
+          nextCase === "monitoring" ||
+          nextCase === "resolved" ||
+          nextCase === "closed"
+          ? nextCase
+          : "all",
+      );
+    });
+  }
+
   const filteredIncidents = incidents.filter((incident) => {
     const matchesRisk = riskFilter === "all" || incident.risk_level === riskFilter;
+    const matchesCase = caseFilter === "all" || incident.case_status === caseFilter;
     const detail = incidentDetails[incident.alert_id];
     const haystack = [
       incident.alert_id,
       incident.hostname,
       incident.detection_name,
       incident.ticket_id ?? "",
+      incident.case_owner ?? "",
       detail?.alert.process_name ?? incident.process_name ?? "",
       detail?.alert.destination_ip ?? incident.destination_ip ?? "",
       detail?.alert.severity ?? incident.severity ?? "",
@@ -199,7 +503,7 @@ export default function App() {
       .join(" ")
       .toLowerCase();
     const matchesSearch = haystack.includes(deferredSearch.trim().toLowerCase());
-    return matchesRisk && matchesSearch;
+    return matchesRisk && matchesCase && matchesSearch;
   });
 
   useEffect(() => {
@@ -236,6 +540,7 @@ export default function App() {
           return;
         }
         startTransition(() => {
+          setApiMode("offline");
           setBanner({ tone: "error", message: errorMessage(error) });
         });
       }
@@ -248,12 +553,91 @@ export default function App() {
     };
   }, [filteredIncidents, incidentDetails]);
 
-  const priorityQueue = incidents.filter((incident) => incident.risk_level === "critical" || incident.risk_level === "high");
+  const hasLiveRemediation = incidents.some(
+    (incident) =>
+      incident.active_action_count > 0 ||
+      incident.pending_approval_count > 0 ||
+      incident.status === "remediating" ||
+      incident.status === "pending_approval",
+  );
+  const selectedHasLiveActions =
+    selectedIncident?.action_results.some((action) => isLiveActionStatus(action.status)) ?? false;
+
+  useEffect(() => {
+    if (!hasLiveRemediation && !selectedHasLiveActions) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function pollLiveState() {
+      try {
+        const [listResult, detailResult, readinessResult] = await Promise.all([
+          listIncidents(),
+          selectedAlertId ? getIncident(selectedAlertId) : Promise.resolve({ mode: apiMode, incident: null }),
+          getReadiness(),
+        ]);
+        if (cancelled) {
+          return;
+        }
+
+        startTransition(() => {
+          setApiMode(listResult.mode);
+          setReadiness(readinessResult.readiness);
+          const nextIncidents =
+            detailResult.incident !== null
+              ? upsertIncidentSummary(listResult.incidents, toIncidentSummary(detailResult.incident))
+              : sortIncidents(listResult.incidents);
+          setIncidents(nextIncidents);
+
+          if (detailResult.incident) {
+            setSelectedIncident(detailResult.incident);
+            setIncidentDetails((current) => ({
+              ...current,
+              [detailResult.incident!.alert_id]: detailResult.incident!,
+            }));
+          }
+        });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        startTransition(() => {
+          setApiMode("offline");
+          setBanner({ tone: "error", message: errorMessage(error) });
+        });
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      void pollLiveState();
+    }, 2500);
+
+    void pollLiveState();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [apiMode, hasLiveRemediation, selectedAlertId, selectedHasLiveActions]);
+
+  const priorityQueue = sortIncidents(
+    incidents.filter(
+      (incident) =>
+        incident.pending_approval_count > 0 ||
+        incident.active_action_count > 0 ||
+        incident.failed_action_count > 0 ||
+        incident.status === "attention",
+    ),
+  );
+  const activeQueueCount = priorityQueue.length;
   const averageRisk = incidents.length
     ? incidents.reduce((sum, incident) => sum + incident.risk_score, 0) / incidents.length
     : 0;
   const ticketedIncidents = incidents.filter((incident) => Boolean(incident.ticket_id)).length;
   const latestCompletedAt = incidents[0]?.completed_at ?? null;
+  const visibleReadinessDependencies =
+    readiness?.dependencies.filter((dependency) => dependency.name !== "incident_repository") ?? [];
 
   return (
     <div className="shell">
@@ -270,6 +654,33 @@ export default function App() {
           </div>
         ) : null}
 
+        {readiness && visibleReadinessDependencies.length > 0 ? (
+          <section className="panel readiness-panel">
+            <div className="section-head">
+              <div>
+                <span className="eyebrow">Readiness</span>
+                <h2>Dependency health</h2>
+              </div>
+              <span className={`badge ${readiness.status === "ready" ? "tone-low" : "tone-medium"}`}>
+                {readiness.status.toUpperCase()}
+              </span>
+            </div>
+            <div className="readiness-grid">
+              {visibleReadinessDependencies.map((dependency) => (
+                <div className="readiness-card" key={dependency.name}>
+                  <div className="readiness-head">
+                    <strong>{titleCase(dependency.name.replace(/_/g, " "))}</strong>
+                    <span className={`badge ${dependency.status === "ready" ? "tone-low" : "tone-medium"}`}>
+                      {dependency.provider}
+                    </span>
+                  </div>
+                  <p>{dependency.detail}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         <section className="operations-grid">
           <IntakePanel apiMode={apiMode} bootstrap={bootstrap} processing={processing} onProcess={handleProcess} />
 
@@ -277,6 +688,7 @@ export default function App() {
             <MetricStrip
               totalIncidents={incidents.length}
               priorityQueue={priorityQueue.length}
+              activeQueueCount={activeQueueCount}
               averageRisk={averageRisk}
               ticketedIncidents={ticketedIncidents}
               latestCompletedAt={latestCompletedAt}
@@ -286,19 +698,19 @@ export default function App() {
               <div className="section-head">
                 <div>
                   <span className="eyebrow">Priority queue</span>
-                  <h2>Watchlist</h2>
+                  <h2>Remediation queue</h2>
                 </div>
-                <span className="badge tone-neutral">{priorityQueue.length} active</span>
+                <span className="badge tone-neutral">{activeQueueCount} live</span>
               </div>
 
               {priorityQueue.length === 0 ? (
                 <div className="empty-mini">
-                  <strong>No high-priority incidents</strong>
-                  <span>The queue will populate when you process higher-risk alerts.</span>
+                  <strong>No queued, approval-blocked, or failed incidents</strong>
+                  <span>The queue will populate when the worker or analyst workflow needs attention.</span>
                 </div>
               ) : (
                 <div className="queue-list">
-                  {priorityQueue.slice(0, 4).map((incident) => (
+                  {priorityQueue.slice(0, 5).map((incident) => (
                     <button
                       className={`queue-item ${incident.alert_id === selectedAlertId ? "is-selected" : ""}`}
                       key={incident.alert_id}
@@ -310,7 +722,15 @@ export default function App() {
                         <strong>{incident.hostname}</strong>
                       </div>
                       <p>{incident.detection_name}</p>
-                      <small>{formatRelativeTime(incident.completed_at)}</small>
+                      <small>
+                        {incident.pending_approval_count > 0
+                          ? `${incident.pending_approval_count} action(s) waiting approval`
+                          : incident.active_action_count > 0
+                            ? `${incident.active_action_count} active remediation step(s)`
+                            : incident.failed_action_count > 0
+                              ? `${incident.failed_action_count} failed remediation step(s)`
+                              : formatRelativeTime(incident.completed_at)}
+                      </small>
                     </button>
                   ))}
                 </div>
@@ -325,13 +745,35 @@ export default function App() {
             incidentDetails={incidentDetails}
             loading={listLoading}
             selectedAlertId={selectedAlertId}
+            selectedRows={selectedRows}
             search={search}
             riskFilter={riskFilter}
+            caseFilter={caseFilter}
+            savedFilters={savedFilters}
             onSearchChange={(value) => startTransition(() => setSearch(value))}
             onRiskFilterChange={(value) => setRiskFilter(value)}
+            onCaseFilterChange={(value) => setCaseFilter(value)}
+            onToggleRow={(alertId) =>
+              setSelectedRows((current) =>
+                current.includes(alertId) ? current.filter((item) => item !== alertId) : [...current, alertId],
+              )
+            }
+            onToggleAll={(checked) =>
+              setSelectedRows(checked ? filteredIncidents.map((incident) => incident.alert_id) : [])
+            }
             onSelect={setSelectedAlertId}
+            onBulkUpdate={handleBulkUpdate}
+            onApplySavedFilter={applySavedFilter}
+            onSaveCurrentFilter={handleSaveCurrentFilter}
           />
-          <IncidentDetail incident={selectedIncident} loading={detailLoading} />
+          <IncidentDetail
+            incident={selectedIncident}
+            loading={detailLoading}
+            onUpdateCase={handleUpdateCase}
+            onAddNote={handleAddNote}
+            onApproveAction={handleApproveAction}
+            onRejectAction={handleRejectAction}
+          />
         </section>
       </main>
     </div>

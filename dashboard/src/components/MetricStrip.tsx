@@ -3,6 +3,7 @@ import { formatDateTime } from "../lib/format";
 interface MetricStripProps {
   totalIncidents: number;
   priorityQueue: number;
+  activeQueueCount: number;
   averageRisk: number;
   ticketedIncidents: number;
   latestCompletedAt?: string | null;
@@ -11,31 +12,32 @@ interface MetricStripProps {
 export function MetricStrip({
   totalIncidents,
   priorityQueue,
+  activeQueueCount,
   averageRisk,
   ticketedIncidents,
   latestCompletedAt,
 }: MetricStripProps) {
   const cards = [
     {
-      label: "Persisted incidents",
+      label: "Persisted Incidents",
       value: totalIncidents.toString(),
-      foot: "Historical alert executions tracked in the deck.",
+      foot: "Historical workflow executions currently indexed in the dashboard.",
       tone: "sky",
     },
     {
-      label: "Priority queue",
+      label: "Remediation Queue",
       value: priorityQueue.toString(),
-      foot: "High and critical cases that should stay visible.",
+      foot: `${activeQueueCount} incident(s) currently need analyst or worker attention.`,
       tone: "critical",
     },
     {
-      label: "Average risk",
+      label: "Average Risk",
       value: averageRisk ? averageRisk.toFixed(1) : "0.0",
       foot: "Mean risk score across the current dataset.",
       tone: "medium",
     },
     {
-      label: "Ticketed incidents",
+      label: "Ticketed Incidents",
       value: ticketedIncidents.toString(),
       foot: latestCompletedAt ? `Latest: ${formatDateTime(latestCompletedAt)}` : "No incidents processed yet.",
       tone: "low",

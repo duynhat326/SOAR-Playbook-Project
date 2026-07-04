@@ -22,7 +22,7 @@ from rich.text import Text
 
 from env_utils import load_local_env_files
 from engine.risk_scoring import RiskScoringEngine
-from enrichment.asset_db import MockAssetDB
+from enrichment.asset_db import build_asset_db_from_env
 from enrichment.base import BaseAssetDB, BaseHashIntel, BaseIPIntel
 from enrichment.hash_intel import MockHashIntel, VirusTotalHashIntel
 from enrichment.ip_intel import MockIPIntel, VirusTotalIPIntel
@@ -75,7 +75,7 @@ class EnrichmentPipeline:
             self._ip_intel = VirusTotalIPIntel()
         else:
             self._ip_intel = MockIPIntel()
-        self._asset_db     = asset_db     or MockAssetDB()
+        self._asset_db     = asset_db     or build_asset_db_from_env()
         self._mitre_mapper = mitre_mapper or MITREMapper()
         self._risk_engine  = risk_engine  or RiskScoringEngine()
         self._verbose      = verbose
@@ -113,6 +113,7 @@ class EnrichmentPipeline:
 
         # ── Bước 4: Asset Criticality ─────────────────────────────────
         enriched.asset_criticality = self._step_check_asset(alert)
+        enriched.asset_info = self._asset_db.get_asset_info(alert.hostname) or {}
 
         # ── Bước 5: MITRE Mapping ─────────────────────────────────────
         enriched.mitre_mappings = self._step_mitre_mapping(alert)
@@ -121,6 +122,7 @@ class EnrichmentPipeline:
         score, level, breakdown = self._step_risk_scoring(enriched)
         enriched.risk_score = score
         enriched.risk_level = level
+        enriched.risk_breakdown = breakdown.to_dict()
 
         enriched.enriched_at = utc_now()
 

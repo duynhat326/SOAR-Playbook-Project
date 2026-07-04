@@ -18,6 +18,8 @@ build/
 node_modules/
 *.tsbuildinfo
 .vite/
+dashboard/test-results/
+dashboard/playwright-report/
 
 # Output / reports
 output/

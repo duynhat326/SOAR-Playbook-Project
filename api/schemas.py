@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from schemas.alert import IncidentResponse, MalwareAlert
+from schemas.alert import IncidentAuditEvent, IncidentNote, IncidentResponse, MalwareAlert
 from services.workflow_service import WorkflowResult
 
 
@@ -90,6 +90,15 @@ class IncidentActionResultResponse(BaseModel):
     status: str
     executed_at: str
     details: str
+    correlation_id: Optional[str] = None
+    attempt_count: int = 0
+    updated_at: Optional[str] = None
+    requires_approval: bool = False
+    approval_state: str = "not_required"
+    approval_reason: Optional[str] = None
+    approved_by: Optional[str] = None
+    approved_at: Optional[str] = None
+    operator: Optional[str] = None
 
 
 class StoredReportResponse(ReportArtifactsResponse):
@@ -107,6 +116,15 @@ class IncidentSummaryResponse(BaseModel):
     status: str
     completed_at: str
     report_path: Optional[str] = None
+    case_status: str = "new"
+    case_owner: Optional[str] = None
+    queued_action_count: int = 0
+    pending_approval_count: int = 0
+    running_action_count: int = 0
+    failed_action_count: int = 0
+    succeeded_action_count: int = 0
+    active_action_count: int = 0
+    note_count: int = 0
 
 
 class IncidentRecordResponse(BaseModel):
@@ -120,6 +138,15 @@ class IncidentRecordResponse(BaseModel):
     status: str
     completed_at: str
     report_path: Optional[str] = None
+    case_status: str = "new"
+    case_owner: Optional[str] = None
+    queued_action_count: int = 0
+    pending_approval_count: int = 0
+    running_action_count: int = 0
+    failed_action_count: int = 0
+    succeeded_action_count: int = 0
+    active_action_count: int = 0
+    note_count: int = 0
     triggered_actions: list[str] = Field(default_factory=list)
     policy_reasoning: list[str] = Field(default_factory=list)
     action_results: list[IncidentActionResultResponse] = Field(default_factory=list)
@@ -128,6 +155,60 @@ class IncidentRecordResponse(BaseModel):
     alert: MalwareAlert
     response: IncidentResponse
     report: StoredReportResponse
+    notes: list[IncidentNote] = Field(default_factory=list)
+    audit_events: list[IncidentAuditEvent] = Field(default_factory=list)
+
+
+class IncidentCaseUpdateRequest(BaseModel):
+    case_status: Optional[str] = None
+    case_owner: Optional[str] = None
+    comment: Optional[str] = None
+
+
+class IncidentNoteCreateRequest(BaseModel):
+    author: str
+    body: str
+
+
+class BulkIncidentUpdateRequest(BaseModel):
+    alert_ids: list[str] = Field(default_factory=list)
+    case_status: Optional[str] = None
+    case_owner: Optional[str] = None
+    comment: Optional[str] = None
+
+
+class ActionApprovalRequest(BaseModel):
+    actor: str
+    comment: Optional[str] = None
+
+
+class SavedFilterCreateRequest(BaseModel):
+    name: str
+    created_by: str
+    filters: dict[str, Any] = Field(default_factory=dict)
+
+
+class SavedFilterResponse(BaseModel):
+    id: int
+    name: str
+    filters: dict[str, Any] = Field(default_factory=dict)
+    created_by: str
+    created_at: str
+    updated_at: str
+
+
+class DependencyReadinessResponse(BaseModel):
+    name: str
+    provider: str
+    status: str
+    detail: str
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReadinessResponse(BaseModel):
+    status: str
+    dependencies: list[DependencyReadinessResponse] = Field(default_factory=list)
+    queue_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 _REDACTED_FIELDS = {
@@ -139,7 +220,7 @@ _REDACTED_FIELDS = {
 
 
 def redact_incident_response(response: IncidentResponse) -> IncidentResponse:
-    payload = response.model_dump(mode="python")
+    payload = response.model_dump(mode="json")
     _redact_alert_payload(payload.get("enriched_alert", {}).get("original_alert", {}))
     return IncidentResponse.model_validate(payload)
 

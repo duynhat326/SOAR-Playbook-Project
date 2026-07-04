@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from typing import Any, List, Optional
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -59,6 +60,37 @@ class ResponseAction(str, Enum):
     CREATE_TICKET = "create_ticket"
     NOTIFY_SOC = "notify_soc"
     NO_ACTION = "no_action"
+
+
+class ActionExecutionStatus(str, Enum):
+    """Lifecycle state for synchronous and asynchronous remediation actions."""
+
+    QUEUED = "queued"
+    WAITING_APPROVAL = "waiting_approval"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class ActionApprovalState(str, Enum):
+    """Approval lifecycle for queued remediation actions."""
+
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class IncidentCaseStatus(str, Enum):
+    """Case-management lifecycle for analyst workflow."""
+
+    NEW = "new"
+    TRIAGED = "triaged"
+    IN_PROGRESS = "in_progress"
+    MONITORING = "monitoring"
+    RESOLVED = "resolved"
+    CLOSED = "closed"
 
 
 class MalwareAlert(BaseModel):
@@ -167,8 +199,17 @@ class HashEnrichment(BaseModel):
     hash_value: str
     reputation: HashReputation
     malicious_vendors: int = Field(default=0, description="Number of malicious detections")
+    suspicious_vendors: int = Field(default=0, description="Number of suspicious detections")
+    harmless_vendors: int = Field(default=0, description="Number of harmless detections")
+    undetected_vendors: int = Field(default=0, description="Number of undetected vendor results")
     total_vendors: int = Field(default=0, description="Total number of vendors")
     threat_name: Optional[str] = Field(default=None, description="Threat family name if known")
+    meaningful_name: Optional[str] = Field(default=None, description="Human-friendly file name if known")
+    community_reputation: Optional[int] = Field(default=None, description="VirusTotal community reputation score")
+    tags: List[str] = Field(default_factory=list, description="Tags returned by the intel source")
+    analysis_stats: dict[str, int] = Field(default_factory=dict, description="Raw last_analysis_stats values")
+    last_analysis_date: Optional[datetime] = Field(default=None, description="Time of the latest analysis event")
+    permalink: Optional[str] = Field(default=None, description="Direct URL to the intel provider object")
     source: str = Field(default="mock_vt", description="Enrichment source")
 
 
@@ -186,6 +227,17 @@ class IPEnrichment(BaseModel):
     is_c2: bool = Field(default=False, description="Whether the IP is a C2 server")
     country: Optional[str] = Field(default=None, description="Country for the IP")
     isp: Optional[str] = Field(default=None, description="ISP for the IP")
+    asn: Optional[int] = Field(default=None, description="Autonomous system number")
+    network: Optional[str] = Field(default=None, description="Network CIDR or range if known")
+    malicious_vendors: int = Field(default=0, description="Number of malicious detections")
+    suspicious_vendors: int = Field(default=0, description="Number of suspicious detections")
+    harmless_vendors: int = Field(default=0, description="Number of harmless detections")
+    undetected_vendors: int = Field(default=0, description="Number of undetected vendor results")
+    tags: List[str] = Field(default_factory=list, description="Tags returned by the intel source")
+    analysis_stats: dict[str, int] = Field(default_factory=dict, description="Raw last_analysis_stats values")
+    community_reputation: Optional[int] = Field(default=None, description="VirusTotal community reputation score")
+    last_analysis_date: Optional[datetime] = Field(default=None, description="Time of the latest analysis event")
+    permalink: Optional[str] = Field(default=None, description="Direct URL to the intel provider object")
     source: str = Field(default="mock_abuseipdb", description="Enrichment source")
 
 
@@ -206,12 +258,14 @@ class EnrichedAlert(BaseModel):
     hash_enrichment: Optional[HashEnrichment] = None
     ip_enrichment: Optional[IPEnrichment] = None
     asset_criticality: AssetCriticality = AssetCriticality.NORMAL
+    asset_info: dict[str, Any] = Field(default_factory=dict, description="CMDB metadata for the asset if available")
     mitre_mappings: List[MITREMapping] = Field(
         default_factory=list,
         description="Mapped MITRE ATT&CK techniques",
     )
     risk_score: float = Field(default=0.0, ge=0.0, le=100.0, description="Aggregate risk score")
     risk_level: str = Field(default="unknown", description="Risk level: low | medium | high | critical")
+    risk_breakdown: dict[str, Any] = Field(default_factory=dict, description="Detailed scoring breakdown")
     enriched_at: datetime = Field(default_factory=utc_now)
 
 
@@ -219,9 +273,47 @@ class ActionResult(BaseModel):
     """Result of executing or dispatching a single action."""
 
     action: ResponseAction
-    status: str = Field(..., description="'success' | 'failed' | 'skipped' | 'queued'")
+    status: ActionExecutionStatus = Field(
+        default=ActionExecutionStatus.SUCCEEDED,
+        description="'queued' | 'waiting_approval' | 'running' | 'succeeded' | 'failed' | 'skipped'",
+    )
     executed_at: datetime = Field(default_factory=utc_now)
     details: str = Field(default="", description="Execution details")
+    correlation_id: Optional[str] = Field(default=None, description="Correlation ID for queued actions")
+    attempt_count: int = Field(default=0, ge=0, description="Number of worker attempts recorded for this action")
+    updated_at: datetime = Field(default_factory=utc_now, description="Last time the action state changed")
+    requires_approval: bool = Field(default=False, description="Whether analyst approval is required before execution")
+    approval_state: ActionApprovalState = Field(default=ActionApprovalState.NOT_REQUIRED)
+    approval_reason: Optional[str] = Field(default=None, description="Why this action requires analyst approval")
+    approved_by: Optional[str] = Field(default=None, description="Approver or rejecting analyst")
+    approved_at: Optional[datetime] = Field(default=None, description="Last approval decision timestamp")
+    operator: Optional[str] = Field(default=None, description="Worker or analyst that last handled the action")
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, value: Any) -> str:
+        if isinstance(value, ActionExecutionStatus):
+            return value.value
+        if isinstance(value, Enum):
+            return str(value.value).strip().lower()
+        candidate = str(value or ActionExecutionStatus.SUCCEEDED.value).strip().lower()
+        if candidate == "success":
+            return ActionExecutionStatus.SUCCEEDED.value
+        if candidate in {"pending_approval", "blocked_on_approval"}:
+            return ActionExecutionStatus.WAITING_APPROVAL.value
+        return candidate
+
+    @field_validator("approval_state", mode="before")
+    @classmethod
+    def normalize_approval_state(cls, value: Any) -> str:
+        if isinstance(value, ActionApprovalState):
+            return value.value
+        if isinstance(value, Enum):
+            return str(value.value).strip().lower()
+        candidate = str(value or ActionApprovalState.NOT_REQUIRED.value).strip().lower()
+        if candidate in {"none", "", "n/a"}:
+            return ActionApprovalState.NOT_REQUIRED.value
+        return candidate
 
 
 class CorrelationHook(BaseModel):
@@ -240,6 +332,33 @@ class QueuedActionRequest(BaseModel):
     deduplication_key: str
     correlation_hooks: List[CorrelationHook] = Field(default_factory=list)
     payload: dict[str, Any] = Field(default_factory=dict)
+    requires_approval: bool = Field(default=False)
+    approval_state: ActionApprovalState = Field(default=ActionApprovalState.NOT_REQUIRED)
+    approval_reason: Optional[str] = Field(default=None)
+    approved_by: Optional[str] = Field(default=None)
+    approved_at: Optional[datetime] = Field(default=None)
+    requested_at: datetime = Field(default_factory=utc_now)
+
+
+class IncidentNote(BaseModel):
+    """Analyst-authored note attached to an incident case."""
+
+    note_id: str = Field(default_factory=lambda: f"note-{uuid4().hex}")
+    author: str
+    body: str
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class IncidentAuditEvent(BaseModel):
+    """Structured audit trail emitted by workflow, queue, and analyst actions."""
+
+    event_id: str = Field(default_factory=lambda: f"audit-{uuid4().hex}")
+    category: str
+    actor: str
+    message: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class PolicyExecutionTrace(BaseModel):

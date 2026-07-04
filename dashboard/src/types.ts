@@ -1,5 +1,11 @@
 export type Severity = "low" | "medium" | "high" | "critical";
 export type RiskLevel = Severity;
+export type ActionExecutionStatus = "queued" | "waiting_approval" | "running" | "succeeded" | "failed" | "skipped";
+export type ActionApprovalState = "not_required" | "pending" | "approved" | "rejected";
+export type HashReputation = "clean" | "suspicious" | "malicious" | "unknown";
+export type IPReputation = "clean" | "unknown" | "malicious";
+export type AssetCriticality = "low" | "normal" | "critical";
+export type IncidentCaseStatus = "new" | "triaged" | "in_progress" | "monitoring" | "resolved" | "closed";
 export type ScenarioKey =
   | "malicious_hash"
   | "c2_communication"
@@ -9,7 +15,7 @@ export type ScenarioKey =
   | "benign"
   | "random";
 export type IntakeMode = "scenario" | "sample" | "json";
-export type ApiMode = "api" | "mock";
+export type ApiMode = "api" | "offline";
 
 export interface MalwareAlert {
   alert_id: string;
@@ -23,24 +29,45 @@ export interface MalwareAlert {
   destination_ip: string;
   severity: Severity;
   detection_name: string;
+  received_at?: string;
 }
 
 export interface HashEnrichment {
   hash_value?: string;
-  reputation: "clean" | "suspicious" | "malicious" | "unknown";
+  reputation: HashReputation;
   malicious_vendors: number;
+  suspicious_vendors: number;
+  harmless_vendors: number;
+  undetected_vendors: number;
   total_vendors: number;
   threat_name?: string | null;
+  meaningful_name?: string | null;
+  community_reputation?: number | null;
+  tags: string[];
+  analysis_stats: Record<string, number>;
+  last_analysis_date?: string | null;
+  permalink?: string | null;
   source: string;
 }
 
 export interface IPEnrichment {
   ip_address: string;
-  reputation: "clean" | "unknown" | "malicious";
+  reputation: IPReputation;
   confidence_score: number;
   is_c2: boolean;
   country?: string | null;
   isp?: string | null;
+  asn?: number | null;
+  network?: string | null;
+  malicious_vendors: number;
+  suspicious_vendors: number;
+  harmless_vendors: number;
+  undetected_vendors: number;
+  tags: string[];
+  analysis_stats: Record<string, number>;
+  community_reputation?: number | null;
+  last_analysis_date?: string | null;
+  permalink?: string | null;
   source: string;
 }
 
@@ -52,22 +79,49 @@ export interface MitreMapping {
   confidence: number;
 }
 
+export interface RiskBreakdownComponent {
+  raw: number;
+  contribution: number;
+}
+
+export interface RiskBreakdown {
+  hash?: RiskBreakdownComponent;
+  ip?: RiskBreakdownComponent;
+  asset?: RiskBreakdownComponent;
+  severity?: RiskBreakdownComponent;
+  mitre?: RiskBreakdownComponent;
+  total?: number;
+  risk_level?: string;
+  reasoning: string[];
+}
+
 export interface EnrichedAlert {
   original_alert: MalwareAlert;
   hash_enrichment?: HashEnrichment;
   ip_enrichment?: IPEnrichment;
-  asset_criticality: "normal" | "high" | "critical";
+  asset_criticality: AssetCriticality;
+  asset_info: Record<string, unknown>;
   mitre_mappings: MitreMapping[];
   risk_score: number;
   risk_level: RiskLevel;
+  risk_breakdown: RiskBreakdown;
   enriched_at: string;
 }
 
 export interface ActionResult {
   action: string;
-  status: "success" | "failed" | "queued" | "skipped";
+  status: ActionExecutionStatus;
   executed_at: string;
   details: string;
+  correlation_id?: string | null;
+  attempt_count: number;
+  updated_at: string;
+  requires_approval: boolean;
+  approval_state: ActionApprovalState;
+  approval_reason?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  operator?: string | null;
 }
 
 export interface CorrelationHook {
@@ -82,6 +136,12 @@ export interface QueuedActionRequest {
   deduplication_key: string;
   correlation_hooks: CorrelationHook[];
   payload: Record<string, unknown>;
+  requires_approval: boolean;
+  approval_state: ActionApprovalState;
+  approval_reason?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  requested_at?: string;
 }
 
 export interface ExecutionTrace {
@@ -124,6 +184,32 @@ export interface IncidentSummary {
   status: string;
   completed_at: string;
   report_path?: string | null;
+  case_status: IncidentCaseStatus;
+  case_owner?: string | null;
+  queued_action_count: number;
+  pending_approval_count: number;
+  running_action_count: number;
+  failed_action_count: number;
+  succeeded_action_count: number;
+  active_action_count: number;
+  note_count: number;
+}
+
+export interface IncidentNote {
+  note_id: string;
+  author: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IncidentAuditEvent {
+  event_id: string;
+  category: string;
+  actor: string;
+  message: string;
+  payload: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface IncidentRecord extends IncidentSummary {
@@ -136,6 +222,8 @@ export interface IncidentRecord extends IncidentSummary {
   response: IncidentResponse;
   report: ReportArtifacts;
   enriched_alert: EnrichedAlert;
+  notes: IncidentNote[];
+  audit_events: IncidentAuditEvent[];
 }
 
 export interface ScenarioOption {
@@ -158,6 +246,29 @@ export interface DashboardBootstrap {
   default_sample_id?: string | null;
   default_scenario: ScenarioKey;
   default_json: string;
+}
+
+export interface SavedFilter {
+  id: number;
+  name: string;
+  filters: Record<string, unknown>;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DependencyReadiness {
+  name: string;
+  provider: string;
+  status: string;
+  detail: string;
+  meta: Record<string, unknown>;
+}
+
+export interface ReadinessState {
+  status: string;
+  dependencies: DependencyReadiness[];
+  queue_metrics: Record<string, unknown>;
 }
 
 export type ProcessAlertInput =

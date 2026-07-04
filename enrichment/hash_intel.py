@@ -9,6 +9,7 @@ Hash reputation providers.
 
 import json
 import random
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -53,6 +54,13 @@ def _extract_threat_name(attributes: dict) -> Optional[str]:
     return str(meaningful_name) if meaningful_name else None
 
 
+def _extract_analysis_date(attributes: dict) -> Optional[datetime]:
+    raw_timestamp = attributes.get("last_analysis_date")
+    if isinstance(raw_timestamp, int) and raw_timestamp > 0:
+        return datetime.fromtimestamp(raw_timestamp, UTC)
+    return None
+
+
 class VirusTotalHashIntel(BaseHashIntel):
     """Live hash reputation lookup using VirusTotal API v3."""
 
@@ -87,8 +95,29 @@ class VirusTotalHashIntel(BaseHashIntel):
             hash_value=normalized,
             reputation=reputation,
             malicious_vendors=malicious,
+            suspicious_vendors=suspicious,
+            harmless_vendors=int(stats.get("harmless", 0) or 0),
+            undetected_vendors=int(stats.get("undetected", 0) or 0),
             total_vendors=total,
             threat_name=threat_name,
+            meaningful_name=(
+                str(attributes.get("meaningful_name"))
+                if attributes.get("meaningful_name")
+                else None
+            ),
+            community_reputation=(
+                int(attributes.get("reputation"))
+                if isinstance(attributes.get("reputation"), int)
+                else None
+            ),
+            tags=[str(tag) for tag in (attributes.get("tags") or [])],
+            analysis_stats={
+                str(key): int(value or 0)
+                for key, value in stats.items()
+                if isinstance(value, int)
+            },
+            last_analysis_date=_extract_analysis_date(attributes),
+            permalink=f"https://www.virustotal.com/gui/file/{normalized}",
             source="virustotal_api_v3",
         )
         logger.debug(
@@ -157,8 +186,17 @@ class MockHashIntel(BaseHashIntel):
                 hash_value=normalized,
                 reputation=HashReputation.UNKNOWN,
                 malicious_vendors=0,
+                suspicious_vendors=0,
+                harmless_vendors=0,
+                undetected_vendors=0,
                 total_vendors=0,
                 threat_name=None,
+                meaningful_name=None,
+                community_reputation=None,
+                tags=[],
+                analysis_stats={},
+                last_analysis_date=None,
+                permalink=None,
                 source="mock_virustotal"
             )
 
@@ -173,8 +211,22 @@ class MockHashIntel(BaseHashIntel):
             hash_value=normalized,
             reputation=reputation,
             malicious_vendors=record.get("malicious_vendors", 0),
+            suspicious_vendors=record.get("suspicious_vendors", 0),
+            harmless_vendors=record.get("harmless_vendors", 0),
+            undetected_vendors=record.get("undetected_vendors", 0),
             total_vendors=record.get("total_vendors", 0),
             threat_name=record.get("threat_name"),
+            meaningful_name=record.get("meaningful_name"),
+            community_reputation=record.get("community_reputation"),
+            tags=[str(tag) for tag in record.get("tags", [])],
+            analysis_stats={
+                "malicious": int(record.get("malicious_vendors", 0) or 0),
+                "suspicious": int(record.get("suspicious_vendors", 0) or 0),
+                "harmless": int(record.get("harmless_vendors", 0) or 0),
+                "undetected": int(record.get("undetected_vendors", 0) or 0),
+            },
+            last_analysis_date=None,
+            permalink=record.get("permalink"),
             source="mock_virustotal"
         )
 
@@ -208,11 +260,20 @@ class RandomHashIntel(BaseHashIntel):
                 hash_value=file_hash,
                 reputation=HashReputation.MALICIOUS,
                 malicious_vendors=random.randint(30, 72),
+                suspicious_vendors=random.randint(0, 5),
+                harmless_vendors=0,
+                undetected_vendors=random.randint(0, 20),
                 total_vendors=72,
                 threat_name=random.choice([
                     "Trojan.GenericKD", "Backdoor.Cobalt.Strike",
                     "Ransomware.BlackCat", "Stealer.RedLine"
                 ]),
+                meaningful_name="sample.exe",
+                community_reputation=random.randint(-20, -1),
+                tags=["malware", "trojan"],
+                analysis_stats={},
+                last_analysis_date=None,
+                permalink=None,
                 source="mock_virustotal_random"
             )
         elif roll < 0.50:
@@ -220,8 +281,17 @@ class RandomHashIntel(BaseHashIntel):
                 hash_value=file_hash,
                 reputation=HashReputation.SUSPICIOUS,
                 malicious_vendors=random.randint(5, 15),
+                suspicious_vendors=random.randint(1, 6),
+                harmless_vendors=random.randint(0, 2),
+                undetected_vendors=random.randint(10, 20),
                 total_vendors=72,
                 threat_name="Suspicious.Generic.Packer",
+                meaningful_name="packer.bin",
+                community_reputation=random.randint(-5, 3),
+                tags=["suspicious"],
+                analysis_stats={},
+                last_analysis_date=None,
+                permalink=None,
                 source="mock_virustotal_random"
             )
         else:
@@ -229,7 +299,16 @@ class RandomHashIntel(BaseHashIntel):
                 hash_value=file_hash,
                 reputation=HashReputation.CLEAN,
                 malicious_vendors=0,
+                suspicious_vendors=0,
+                harmless_vendors=random.randint(40, 60),
+                undetected_vendors=random.randint(10, 20),
                 total_vendors=72,
                 threat_name=None,
+                meaningful_name=None,
+                community_reputation=random.randint(0, 10),
+                tags=[],
+                analysis_stats={},
+                last_analysis_date=None,
+                permalink=None,
                 source="mock_virustotal_random"
             )

@@ -61,7 +61,7 @@ def execute(
 
     return ActionResult(
         action=ResponseAction.ISOLATE_HOST,
-        status="success",
+        status="succeeded",
         executed_at=utc_now(),
         details=details,
     )

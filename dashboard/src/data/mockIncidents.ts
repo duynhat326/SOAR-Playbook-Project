@@ -25,7 +25,7 @@ interface MockAlertSeed {
 interface ScenarioProfile {
   riskScore: number;
   riskLevel: RiskLevel;
-  assetCriticality: "normal" | "high" | "critical";
+  assetCriticality: "low" | "normal" | "critical";
   hashEnrichment: EnrichedAlert["hash_enrichment"];
   ipEnrichment: EnrichedAlert["ip_enrichment"];
   mitre: MitreMapping[];
@@ -148,25 +148,74 @@ const dangerousProcessTemplate: MalwareAlert = {
   detection_name: "Credential.Dumping.Attempt",
 };
 
+function mockHash(
+  overrides: Partial<NonNullable<EnrichedAlert["hash_enrichment"]>>,
+): NonNullable<EnrichedAlert["hash_enrichment"]> {
+  return {
+    hash_value: undefined,
+    reputation: "unknown",
+    malicious_vendors: 0,
+    suspicious_vendors: 0,
+    harmless_vendors: 0,
+    undetected_vendors: 0,
+    total_vendors: 0,
+    threat_name: null,
+    meaningful_name: null,
+    community_reputation: null,
+    tags: [],
+    analysis_stats: {},
+    last_analysis_date: null,
+    permalink: null,
+    source: "Mock intel",
+    ...overrides,
+  };
+}
+
+function mockIp(
+  overrides: Partial<NonNullable<EnrichedAlert["ip_enrichment"]>>,
+): NonNullable<EnrichedAlert["ip_enrichment"]> {
+  return {
+    ip_address: "0.0.0.0",
+    reputation: "unknown",
+    confidence_score: 0,
+    is_c2: false,
+    country: null,
+    isp: null,
+    asn: null,
+    network: null,
+    malicious_vendors: 0,
+    suspicious_vendors: 0,
+    harmless_vendors: 0,
+    undetected_vendors: 0,
+    tags: [],
+    analysis_stats: {},
+    community_reputation: null,
+    last_analysis_date: null,
+    permalink: null,
+    source: "Mock intel",
+    ...overrides,
+  };
+}
+
 const scenarioProfiles: Record<Exclude<ScenarioKey, "random">, ScenarioProfile> = {
   mixed: {
     riskScore: 95,
     riskLevel: "critical",
     assetCriticality: "critical",
-    hashEnrichment: {
+    hashEnrichment: mockHash({
       reputation: "malicious",
       malicious_vendors: 68,
       total_vendors: 72,
       source: "VirusTotal mirror",
-    },
-    ipEnrichment: {
+    }),
+    ipEnrichment: mockIp({
       ip_address: "194.165.16.11",
       reputation: "malicious",
       confidence_score: 98,
       is_c2: true,
       country: "RU",
       source: "Threat intel gateway",
-    },
+    }),
     mitre: [
       {
         technique_id: "T1003.001",
@@ -203,21 +252,21 @@ const scenarioProfiles: Record<Exclude<ScenarioKey, "random">, ScenarioProfile> 
   malicious_hash: {
     riskScore: 81,
     riskLevel: "critical",
-    assetCriticality: "high",
-    hashEnrichment: {
+    assetCriticality: "normal",
+    hashEnrichment: mockHash({
       reputation: "malicious",
       malicious_vendors: 65,
       total_vendors: 72,
       source: "Hash reputation cluster",
-    },
-    ipEnrichment: {
+    }),
+    ipEnrichment: mockIp({
       ip_address: "198.51.100.10",
       reputation: "unknown",
       confidence_score: 42,
       is_c2: false,
       country: "US",
       source: "Network reputation cache",
-    },
+    }),
     mitre: [
       {
         technique_id: "T1059.001",
@@ -248,20 +297,20 @@ const scenarioProfiles: Record<Exclude<ScenarioKey, "random">, ScenarioProfile> 
     riskScore: 74,
     riskLevel: "high",
     assetCriticality: "normal",
-    hashEnrichment: {
+    hashEnrichment: mockHash({
       reputation: "unknown",
       malicious_vendors: 1,
       total_vendors: 72,
       source: "Hash reputation cluster",
-    },
-    ipEnrichment: {
+    }),
+    ipEnrichment: mockIp({
       ip_address: "185.220.101.45",
       reputation: "malicious",
       confidence_score: 100,
       is_c2: true,
       country: "NL",
       source: "Abuse stream",
-    },
+    }),
     mitre: [
       {
         technique_id: "T1071.001",
@@ -292,20 +341,20 @@ const scenarioProfiles: Record<Exclude<ScenarioKey, "random">, ScenarioProfile> 
     riskScore: 68,
     riskLevel: "high",
     assetCriticality: "critical",
-    hashEnrichment: {
+    hashEnrichment: mockHash({
       reputation: "unknown",
       malicious_vendors: 0,
       total_vendors: 72,
       source: "Hash reputation cluster",
-    },
-    ipEnrichment: {
+    }),
+    ipEnrichment: mockIp({
       ip_address: "203.0.113.5",
       reputation: "unknown",
       confidence_score: 26,
       is_c2: false,
       country: "SG",
       source: "Network reputation cache",
-    },
+    }),
     mitre: [
       {
         technique_id: "T1059.001",
@@ -335,21 +384,21 @@ const scenarioProfiles: Record<Exclude<ScenarioKey, "random">, ScenarioProfile> 
   dangerous_process: {
     riskScore: 72,
     riskLevel: "high",
-    assetCriticality: "high",
-    hashEnrichment: {
+    assetCriticality: "normal",
+    hashEnrichment: mockHash({
       reputation: "suspicious",
       malicious_vendors: 12,
       total_vendors: 72,
       source: "Hash reputation cluster",
-    },
-    ipEnrichment: {
+    }),
+    ipEnrichment: mockIp({
       ip_address: "198.18.0.42",
       reputation: "clean",
       confidence_score: 0,
       is_c2: false,
       country: "Internal",
       source: "Network reputation cache",
-    },
+    }),
     mitre: [
       {
         technique_id: "T1003.001",
@@ -380,20 +429,20 @@ const scenarioProfiles: Record<Exclude<ScenarioKey, "random">, ScenarioProfile> 
     riskScore: 18,
     riskLevel: "low",
     assetCriticality: "normal",
-    hashEnrichment: {
+    hashEnrichment: mockHash({
       reputation: "clean",
       malicious_vendors: 0,
       total_vendors: 72,
       source: "Hash reputation cluster",
-    },
-    ipEnrichment: {
+    }),
+    ipEnrichment: mockIp({
       ip_address: "10.0.0.1",
       reputation: "clean",
       confidence_score: 0,
       is_c2: false,
       country: "Internal",
       source: "Network reputation cache",
-    },
+    }),
     mitre: [
       {
         technique_id: "T1059.001",
@@ -572,14 +621,21 @@ function ticketForAlert(alert: MalwareAlert, riskLevel: RiskLevel): string {
 function actionResultList(actions: string[], completedAt: string): ActionResult[] {
   return actions.map((action, index) => ({
     action,
-    status: action === "notify_soc" ? "queued" : "success",
+    status: "succeeded",
     executed_at: new Date(new Date(completedAt).getTime() - (actions.length - index) * 45000).toISOString(),
     details:
-      action === "notify_soc"
-        ? "Case summary prepared for analyst handoff."
-        : action === "create_ticket"
-          ? "Incident record persisted and enriched context attached."
-          : `${action.replace(/_/g, " ")} completed by policy engine.`,
+      action === "create_ticket"
+        ? "Incident record persisted and enriched context attached."
+        : `${action.replace(/_/g, " ")} completed by policy engine.`,
+    correlation_id: null,
+    attempt_count: 0,
+    updated_at: completedAt,
+    requires_approval: false,
+    approval_state: "not_required",
+    approval_reason: null,
+    approved_by: null,
+    approved_at: null,
+    operator: "mock-policy-engine",
   }));
 }
 
@@ -606,6 +662,10 @@ function reportForAlert(alert: MalwareAlert, profile: ScenarioProfile, completed
 }
 
 function toSummary(record: IncidentRecord): IncidentSummary {
+  const queued_action_count = record.action_results.filter((action) => action.status === "queued").length;
+  const running_action_count = record.action_results.filter((action) => action.status === "running").length;
+  const failed_action_count = record.action_results.filter((action) => action.status === "failed").length;
+  const succeeded_action_count = record.action_results.filter((action) => action.status === "succeeded").length;
   return {
     id: record.id,
     alert_id: record.alert_id,
@@ -620,6 +680,15 @@ function toSummary(record: IncidentRecord): IncidentSummary {
     status: record.status,
     completed_at: record.completed_at,
     report_path: record.report_path,
+    case_status: record.case_status,
+    case_owner: record.case_owner,
+    queued_action_count,
+    pending_approval_count: 0,
+    running_action_count,
+    failed_action_count,
+    succeeded_action_count,
+    active_action_count: queued_action_count + running_action_count,
+    note_count: record.note_count,
   };
 }
 
@@ -634,9 +703,15 @@ function createIncident(alertInput: MalwareAlert, minutesAgo = 0): IncidentRecor
     hash_enrichment: profile.hashEnrichment,
     ip_enrichment: profile.ipEnrichment,
     asset_criticality: profile.assetCriticality,
+    asset_info: {},
     mitre_mappings: profile.mitre,
     risk_score: profile.riskScore,
     risk_level: profile.riskLevel,
+    risk_breakdown: {
+      reasoning: profile.reasoning,
+      total: profile.riskScore,
+      risk_level: profile.riskLevel,
+    },
     enriched_at: new Date(new Date(completedAt).getTime() - 90000).toISOString(),
   };
   const response = {
@@ -661,6 +736,15 @@ function createIncident(alertInput: MalwareAlert, minutesAgo = 0): IncidentRecor
     status: profile.status,
     completed_at: completedAt,
     report_path: response.report_path,
+    case_status: "new",
+    case_owner: null,
+    queued_action_count: 0,
+    pending_approval_count: 0,
+    running_action_count: 0,
+    failed_action_count: 0,
+    succeeded_action_count: response.action_results.length,
+    active_action_count: 0,
+    note_count: 0,
     triggered_actions: response.triggered_actions,
     policy_reasoning: response.policy_reasoning,
     action_results: response.action_results,
@@ -670,6 +754,8 @@ function createIncident(alertInput: MalwareAlert, minutesAgo = 0): IncidentRecor
     response,
     report,
     enriched_alert: enrichedAlert,
+    notes: [],
+    audit_events: [],
   };
 }
 

@@ -58,7 +58,7 @@ def execute(
 
     return ActionResult(
         action=ResponseAction.KILL_PROCESS,
-        status="success",
+        status="succeeded",
         executed_at=utc_now(),
         details=details,
     )

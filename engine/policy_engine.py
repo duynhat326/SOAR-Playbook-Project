@@ -458,7 +458,7 @@ class PolicyEngine:
             )
             return ActionResult(
                 action=ResponseAction.ESCALATE,
-                status="success",
+                status="succeeded",
                 executed_at=utc_now(),
                 details=(
                     f"Alert escalated: Host '{alert.hostname}' là critical asset. "
@@ -531,12 +531,13 @@ class PolicyEngine:
     def _print_summary(self, response: IncidentResponse) -> None:
         """In tóm tắt cuối sau khi tất cả actions đã thực hiện."""
         alert = response.enriched_alert.original_alert
-        executed = [r for r in response.action_results if r.status == "success"]
+        executed = [r for r in response.action_results if r.status == "succeeded"]
+        in_flight = [r for r in response.action_results if r.status in {"queued", "running"}]
 
         console.print(Panel(
             f"[bold]Alert ID:[/bold]  {alert.alert_id}\n"
             f"[bold]Ticket:[/bold]    {response.ticket_id or '—'}\n"
-            f"[bold]Actions:[/bold]   {len(executed)} executed successfully\n"
+            f"[bold]Actions:[/bold]   {len(executed)} completed, {len(in_flight)} in-flight\n"
             f"[bold]Completed:[/bold] {response.completed_at.strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
             f"[bold]Reasoning:[/bold]\n" +
             "\n".join(f"  • {r}" for r in response.policy_reasoning),

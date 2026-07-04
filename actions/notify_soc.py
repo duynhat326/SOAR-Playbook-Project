@@ -86,7 +86,7 @@ def execute(
 
     return ActionResult(
         action=ResponseAction.NOTIFY_SOC,
-        status="success",
+        status="succeeded",
         executed_at=utc_now(),
         details=details,
     )
