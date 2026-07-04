@@ -6,7 +6,6 @@ export default defineConfig(({ mode }) => {
   const proxyTarget = (env.SOAR_API_PROXY_TARGET || env.VITE_SOAR_API_BASE_URL || "http://127.0.0.1:8000")
     .trim()
     .replace(/\/$/, "");
-  const proxyToken = (env.SOAR_API_PROXY_TOKEN || env.SOAR_AUTH_TOKEN || "").trim();
 
   return {
     envDir: "..",
@@ -18,14 +17,6 @@ export default defineConfig(({ mode }) => {
           target: proxyTarget,
           changeOrigin: true,
           rewrite: (requestPath) => requestPath.replace(/^\/soar-api/, ""),
-          configure(proxy) {
-            if (!proxyToken) {
-              return;
-            }
-            proxy.on("proxyReq", (proxyReq) => {
-              proxyReq.setHeader("Authorization", `Bearer ${proxyToken}`);
-            });
-          },
         },
       },
     },

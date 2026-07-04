@@ -30,6 +30,7 @@ import type {
 const EXPLICIT_API_BASE_URL = (import.meta.env.VITE_SOAR_API_BASE_URL ?? "").trim().replace(/\/$/, "");
 const DEV_PROXY_BASE_URL = import.meta.env.DEV ? "/soar-api" : "";
 const API_BASE_URL = (EXPLICIT_API_BASE_URL || DEV_PROXY_BASE_URL).replace(/\/$/, "");
+const AUTH_STORAGE_KEY = "soar.dashboard.authToken";
 
 const EMPTY_ALERT: MalwareAlert = {
   alert_id: "pending-alert",
@@ -53,6 +54,53 @@ const fallbackDashboardBootstrap: DashboardBootstrap = {
   default_scenario: "mixed",
   default_json: JSON.stringify(EMPTY_ALERT, null, 2),
 };
+
+let dashboardAuthToken = readStoredAuthToken();
+
+function readStoredAuthToken(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  try {
+    return (window.sessionStorage.getItem(AUTH_STORAGE_KEY) ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function getStoredDashboardAuthToken(): string {
+  const stored = readStoredAuthToken();
+  if (stored !== dashboardAuthToken) {
+    dashboardAuthToken = stored;
+  }
+  return dashboardAuthToken;
+}
+
+export function getDashboardAuthToken(): string {
+  return getStoredDashboardAuthToken();
+}
+
+export function setDashboardAuthToken(token: string): string {
+  dashboardAuthToken = token.trim();
+
+  if (typeof window !== "undefined") {
+    try {
+      if (dashboardAuthToken.length > 0) {
+        window.sessionStorage.setItem(AUTH_STORAGE_KEY, dashboardAuthToken);
+      } else {
+        window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
+      }
+    } catch {
+    }
+  }
+
+  return dashboardAuthToken;
+}
+
+export function clearDashboardAuthToken(): void {
+  setDashboardAuthToken("");
+}
 
 function canUseApi(): boolean {
   if (typeof window === "undefined") {
@@ -424,15 +472,16 @@ function normalizeReportArtifacts(payload: any, fallbackReportPath: unknown): Re
   };
 }
 
-function headers(): HeadersInit {
+function headers(token: string): HeadersInit {
   return {
+    Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
   };
 }
 
 function publicErrorMessage(path: string, status: number): string {
   if (status === 401 || status === 403) {
-    return "Authentication is required to access the dashboard service.";
+    return "Authentication failed for this dashboard session. Update the bearer token and try again.";
   }
 
   if (status === 404) {
@@ -453,11 +502,15 @@ function publicErrorMessage(path: string, status: number): string {
   return "The dashboard request failed. Please try again.";
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+async function request(path: string, init?: RequestInit): Promise<Response> {
   ensureApiAvailable();
+  const token = getStoredDashboardAuthToken();
+  if (token.length === 0) {
+    throw new Error("Paste a bearer token to unlock this dashboard session.");
+  }
 
   const requestHeaders = new Headers(init?.headers);
-  Object.entries(headers()).forEach(([key, value]) => {
+  Object.entries(headers(token)).forEach(([key, value]) => {
     requestHeaders.set(key, value);
   });
 
@@ -475,6 +528,12 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     throw new Error(publicErrorMessage(path, response.status));
   }
+
+  return response;
+}
+
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await request(path, init);
 
   return (await response.json()) as T;
 }
@@ -834,11 +893,39 @@ export async function processAlert(
   return { mode: result.mode, incident: result.data };
 }
 
-export function buildIncidentReportUrl(alertId: string): string | null {
-  if (!canUseApi()) {
-    return null;
+export async function openIncidentReport(alertId: string): Promise<void> {
+  if (typeof window === "undefined") {
+    return;
   }
-  return `${API_BASE_URL}/api/v1/incidents/by-alert/${encodeURIComponent(alertId)}/report/html`;
+
+  const reportWindow = window.open("", "_blank");
+  if (reportWindow) {
+    reportWindow.document.title = "Loading SOAR report";
+    reportWindow.document.body.innerHTML = "<p>Loading report...</p>";
+  }
+
+  try {
+    const response = await request(`/api/v1/incidents/by-alert/${encodeURIComponent(alertId)}/report/html`);
+    const html = await response.text();
+
+    if (reportWindow) {
+      try {
+        reportWindow.opener = null;
+      } catch {
+      }
+      reportWindow.document.open();
+      reportWindow.document.write(html);
+      reportWindow.document.close();
+      return;
+    }
+
+    const blobUrl = window.URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    window.open(blobUrl, "_blank", "noopener");
+    window.setTimeout(() => window.URL.revokeObjectURL(blobUrl), 60_000);
+  } catch (error) {
+    reportWindow?.close();
+    throw error;
+  }
 }
 
 export { API_BASE_URL };

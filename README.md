@@ -275,9 +275,9 @@ That local proxy:
 
 - reads repo-root `.env.local`
 - forwards `/soar-api/*` to FastAPI
-- injects the bearer token server-side
+- forwards the browser's `Authorization` header unchanged
 
-This keeps the browser UI connected to the real API without exposing a public `VITE_*` secret token.
+The dashboard now expects each browser tab to carry its own bearer token in `sessionStorage`, so the proxy no longer injects a shared operator credential.
 
 ---
 
@@ -370,9 +370,8 @@ Create a local `.env.local` from `.env.example` and set at least:
 SUPABASE_DB_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
 SOAR_INTEL_PROVIDER=virustotal
 VIRUSTOTAL_API_KEY=
-SOAR_AUTH_TOKENS_JSON={"tokens":[{"token":"incident-operator-token","principal_id":"incident-operator","principal_type":"user","roles":["incident_process","incident_read"],"workspaces":["*"]}]}
+SOAR_AUTH_TOKENS_JSON={"tokens":[{"token":"<generate-a-long-random-token>","principal_id":"incident-operator","principal_type":"user","roles":["incident_process","incident_read"],"workspaces":["*"]}]}
 SOAR_API_PROXY_TARGET=http://127.0.0.1:8000
-SOAR_API_PROXY_TOKEN=incident-operator-token
 ```
 
 ### 4. Run FastAPI
@@ -386,6 +385,8 @@ python -m uvicorn api.app:app --reload
 ```bash
 npm --prefix dashboard run dev
 ```
+
+When the dashboard opens, paste the operator bearer token into the session prompt shown in the UI. The token is stored only in that browser tab's `sessionStorage`.
 
 ### 6. Optional CLI smoke run
 

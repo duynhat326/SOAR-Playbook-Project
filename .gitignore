@@ -44,6 +44,14 @@ htmlcov/
 .env.*
 !.env.example
 
+# Local IDE/runtime metadata accidentally added before ignore rules were in place
+.cursor/
+.gemini/
+
+# Internal pentest artifacts and analyst-only reports
+docs/pentest-report-*.md
+docs/reports/dashboard-pentest-*.md
+
 # Local databases
 *.db
 *.sqlite

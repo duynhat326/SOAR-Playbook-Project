@@ -11,7 +11,7 @@ from a2a.schemas import (
     TaskCreateRequest,
     WorkspaceCreateRequest,
 )
-from a2a.service import A2AService
+from a2a.service import A2AService, resolve_db_target
 from security import ROLE_A2A_AGENT
 
 
@@ -194,3 +194,12 @@ def test_a2a_service_prevents_second_agent_from_stealing_claimed_task(
             TaskClaimRequest(agent_id=other.agent_id),
             principal=other_principal,
         )
+
+
+def test_resolve_db_target_prefers_local_a2a_path_over_shared_supabase_env(monkeypatch, tmp_path: Path):
+    local_path = tmp_path / "a2a-local.db"
+    monkeypatch.setenv("SOAR_A2A_DB_PATH", str(local_path))
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://shared.example.test/postgres")
+    monkeypatch.delenv("SOAR_A2A_DB_URL", raising=False)
+
+    assert resolve_db_target() == local_path

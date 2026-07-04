@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useState, type FormEvent } from "react";
 import { Hero } from "./components/Hero";
 import { IncidentDetail } from "./components/IncidentDetail";
 import { IncidentTable } from "./components/IncidentTable";
@@ -9,6 +9,8 @@ import {
   addIncidentNote,
   approveAction,
   bulkUpdateIncidents,
+  clearDashboardAuthToken,
+  getDashboardAuthToken,
   getFallbackDashboardBootstrap,
   getIncident,
   getReadiness,
@@ -18,6 +20,7 @@ import {
   processAlert,
   rejectAction,
   saveFilter,
+  setDashboardAuthToken,
   updateIncidentCase,
 } from "./services/soarApi";
 import type {
@@ -159,8 +162,48 @@ export default function App() {
   const [banner, setBanner] = useState<BannerState | null>(null);
   const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
   const [readiness, setReadiness] = useState<ReadinessState | null>(null);
+  const [sessionToken, setSessionToken] = useState(() => getDashboardAuthToken());
+  const [tokenDraft, setTokenDraft] = useState(() => getDashboardAuthToken());
 
   const deferredSearch = useDeferredValue(search);
+  const isAuthenticated = sessionToken.trim().length > 0;
+
+  function resetDashboardState() {
+    setApiMode("offline");
+    setBootstrap(getFallbackDashboardBootstrap());
+    setIncidents([]);
+    setIncidentDetails({});
+    setSelectedAlertId(null);
+    setSelectedIncident(null);
+    setListLoading(false);
+    setDetailLoading(false);
+    setProcessing(false);
+    setSelectedRows([]);
+    setSavedFilters([]);
+    setReadiness(null);
+  }
+
+  function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextToken = tokenDraft.trim();
+    if (nextToken.length === 0) {
+      setBanner({ tone: "error", message: "Paste a bearer token before unlocking the dashboard." });
+      return;
+    }
+
+    resetDashboardState();
+    setListLoading(true);
+    setSessionToken(setDashboardAuthToken(nextToken));
+    setBanner({ tone: "success", message: "Dashboard session token updated for this browser tab." });
+  }
+
+  function handleClearSession() {
+    clearDashboardAuthToken();
+    setSessionToken("");
+    setTokenDraft("");
+    resetDashboardState();
+    setBanner({ tone: "success", message: "Dashboard session cleared." });
+  }
 
   async function refreshReadiness() {
     try {
@@ -264,34 +307,54 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      resetDashboardState();
+      return;
+    }
+
+    let cancelled = false;
+
     async function loadInitialState() {
       try {
         const bootstrapResult = await loadDashboardBootstrap();
+        if (cancelled) {
+          return;
+        }
         startTransition(() => {
           setApiMode(bootstrapResult.mode);
           setBootstrap(bootstrapResult.bootstrap);
         });
       } catch (error) {
+        if (cancelled) {
+          return;
+        }
         startTransition(() => {
           setApiMode("offline");
+          setListLoading(false);
           setBanner({ tone: "error", message: errorMessage(error) });
         });
+        return;
       }
 
       await Promise.all([refreshIncidents(), refreshReadiness(), refreshSavedFilters()]);
     }
 
+    setListLoading(true);
     void loadInitialState();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, sessionToken]);
 
   useEffect(() => {
-    if (!selectedAlertId) {
+    if (!isAuthenticated || !selectedAlertId) {
       setSelectedIncident(null);
       return;
     }
 
     void refreshSelectedIncident(selectedAlertId);
-  }, [selectedAlertId]);
+  }, [isAuthenticated, selectedAlertId]);
 
   async function handleProcess(input: ProcessAlertInput) {
     setProcessing(true);
@@ -507,6 +570,10 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     const incidentsToHydrate = filteredIncidents
       .filter((incident) => !incidentDetails[incident.alert_id])
       .map((incident) => incident.alert_id);
@@ -551,7 +618,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [filteredIncidents, incidentDetails]);
+  }, [filteredIncidents, incidentDetails, isAuthenticated]);
 
   const hasLiveRemediation = incidents.some(
     (incident) =>
@@ -564,7 +631,7 @@ export default function App() {
     selectedIncident?.action_results.some((action) => isLiveActionStatus(action.status)) ?? false;
 
   useEffect(() => {
-    if (!hasLiveRemediation && !selectedHasLiveActions) {
+    if (!isAuthenticated || (!hasLiveRemediation && !selectedHasLiveActions)) {
       return;
     }
 
@@ -619,7 +686,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [apiMode, hasLiveRemediation, selectedAlertId, selectedHasLiveActions]);
+  }, [apiMode, hasLiveRemediation, isAuthenticated, selectedAlertId, selectedHasLiveActions]);
 
   const priorityQueue = sortIncidents(
     incidents.filter(
@@ -648,13 +715,51 @@ export default function App() {
       <main className="app-shell">
         <Hero apiMode={apiMode} highlightedIncident={selectedIncident} incidentCount={incidents.length} />
 
+        <section className="panel auth-panel">
+          <div className="section-head">
+            <div>
+              <span className="eyebrow">Access</span>
+              <h2>Dashboard session</h2>
+            </div>
+            <span className={`badge ${isAuthenticated ? "tone-low" : "tone-medium"}`}>
+              {isAuthenticated ? "Session active" : "Auth required"}
+            </span>
+          </div>
+          <form className="auth-form" onSubmit={handleAuthSubmit}>
+            <label className="field">
+              <span>Bearer token</span>
+              <input
+                autoComplete="off"
+                onChange={(event) => setTokenDraft(event.target.value)}
+                placeholder="Paste an incident operator token for this browser tab"
+                type="password"
+                value={tokenDraft}
+              />
+            </label>
+            <div className="auth-actions">
+              <button className="primary-button compact-button" type="submit">
+                {isAuthenticated ? "Replace token" : "Unlock dashboard"}
+              </button>
+              {isAuthenticated ? (
+                <button className="secondary-button compact-button" onClick={handleClearSession} type="button">
+                  Clear session
+                </button>
+              ) : null}
+            </div>
+          </form>
+          <p className="auth-copy">
+            The token is stored only in this tab&apos;s <code>sessionStorage</code>. Local and Vercel proxies now forward
+            your browser header instead of injecting a shared service credential.
+          </p>
+        </section>
+
         {banner ? (
           <div className={`banner ${banner.tone === "error" ? "banner-error" : "banner-success"}`}>
             {banner.message}
           </div>
         ) : null}
 
-        {readiness && visibleReadinessDependencies.length > 0 ? (
+        {isAuthenticated && readiness && visibleReadinessDependencies.length > 0 ? (
           <section className="panel readiness-panel">
             <div className="section-head">
               <div>
@@ -681,100 +786,104 @@ export default function App() {
           </section>
         ) : null}
 
-        <section className="operations-grid">
-          <IntakePanel apiMode={apiMode} bootstrap={bootstrap} processing={processing} onProcess={handleProcess} />
+        {isAuthenticated ? (
+          <>
+            <section className="operations-grid">
+              <IntakePanel apiMode={apiMode} bootstrap={bootstrap} processing={processing} onProcess={handleProcess} />
 
-          <div className="operations-stack">
-            <MetricStrip
-              totalIncidents={incidents.length}
-              priorityQueue={priorityQueue.length}
-              activeQueueCount={activeQueueCount}
-              averageRisk={averageRisk}
-              ticketedIncidents={ticketedIncidents}
-              latestCompletedAt={latestCompletedAt}
-            />
+              <div className="operations-stack">
+                <MetricStrip
+                  totalIncidents={incidents.length}
+                  priorityQueue={priorityQueue.length}
+                  activeQueueCount={activeQueueCount}
+                  averageRisk={averageRisk}
+                  ticketedIncidents={ticketedIncidents}
+                  latestCompletedAt={latestCompletedAt}
+                />
 
-            <section className="panel queue-panel">
-              <div className="section-head">
-                <div>
-                  <span className="eyebrow">Priority queue</span>
-                  <h2>Remediation queue</h2>
-                </div>
-                <span className="badge tone-neutral">{activeQueueCount} live</span>
+                <section className="panel queue-panel">
+                  <div className="section-head">
+                    <div>
+                      <span className="eyebrow">Priority queue</span>
+                      <h2>Remediation queue</h2>
+                    </div>
+                    <span className="badge tone-neutral">{activeQueueCount} live</span>
+                  </div>
+
+                  {priorityQueue.length === 0 ? (
+                    <div className="empty-mini">
+                      <strong>No queued, approval-blocked, or failed incidents</strong>
+                      <span>The queue will populate when the worker or analyst workflow needs attention.</span>
+                    </div>
+                  ) : (
+                    <div className="queue-list">
+                      {priorityQueue.slice(0, 5).map((incident) => (
+                        <button
+                          className={`queue-item ${incident.alert_id === selectedAlertId ? "is-selected" : ""}`}
+                          key={incident.alert_id}
+                          onClick={() => setSelectedAlertId(incident.alert_id)}
+                          type="button"
+                        >
+                          <div>
+                            <span className={`badge tone-${incident.risk_level}`}>{incident.risk_level.toUpperCase()}</span>
+                            <strong>{incident.hostname}</strong>
+                          </div>
+                          <p>{incident.detection_name}</p>
+                          <small>
+                            {incident.pending_approval_count > 0
+                              ? `${incident.pending_approval_count} action(s) waiting approval`
+                              : incident.active_action_count > 0
+                                ? `${incident.active_action_count} active remediation step(s)`
+                                : incident.failed_action_count > 0
+                                  ? `${incident.failed_action_count} failed remediation step(s)`
+                                  : formatRelativeTime(incident.completed_at)}
+                          </small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </section>
               </div>
-
-              {priorityQueue.length === 0 ? (
-                <div className="empty-mini">
-                  <strong>No queued, approval-blocked, or failed incidents</strong>
-                  <span>The queue will populate when the worker or analyst workflow needs attention.</span>
-                </div>
-              ) : (
-                <div className="queue-list">
-                  {priorityQueue.slice(0, 5).map((incident) => (
-                    <button
-                      className={`queue-item ${incident.alert_id === selectedAlertId ? "is-selected" : ""}`}
-                      key={incident.alert_id}
-                      onClick={() => setSelectedAlertId(incident.alert_id)}
-                      type="button"
-                    >
-                      <div>
-                        <span className={`badge tone-${incident.risk_level}`}>{incident.risk_level.toUpperCase()}</span>
-                        <strong>{incident.hostname}</strong>
-                      </div>
-                      <p>{incident.detection_name}</p>
-                      <small>
-                        {incident.pending_approval_count > 0
-                          ? `${incident.pending_approval_count} action(s) waiting approval`
-                          : incident.active_action_count > 0
-                            ? `${incident.active_action_count} active remediation step(s)`
-                            : incident.failed_action_count > 0
-                              ? `${incident.failed_action_count} failed remediation step(s)`
-                              : formatRelativeTime(incident.completed_at)}
-                      </small>
-                    </button>
-                  ))}
-                </div>
-              )}
             </section>
-          </div>
-        </section>
 
-        <section className="workbench-grid">
-          <IncidentTable
-            incidents={filteredIncidents}
-            incidentDetails={incidentDetails}
-            loading={listLoading}
-            selectedAlertId={selectedAlertId}
-            selectedRows={selectedRows}
-            search={search}
-            riskFilter={riskFilter}
-            caseFilter={caseFilter}
-            savedFilters={savedFilters}
-            onSearchChange={(value) => startTransition(() => setSearch(value))}
-            onRiskFilterChange={(value) => setRiskFilter(value)}
-            onCaseFilterChange={(value) => setCaseFilter(value)}
-            onToggleRow={(alertId) =>
-              setSelectedRows((current) =>
-                current.includes(alertId) ? current.filter((item) => item !== alertId) : [...current, alertId],
-              )
-            }
-            onToggleAll={(checked) =>
-              setSelectedRows(checked ? filteredIncidents.map((incident) => incident.alert_id) : [])
-            }
-            onSelect={setSelectedAlertId}
-            onBulkUpdate={handleBulkUpdate}
-            onApplySavedFilter={applySavedFilter}
-            onSaveCurrentFilter={handleSaveCurrentFilter}
-          />
-          <IncidentDetail
-            incident={selectedIncident}
-            loading={detailLoading}
-            onUpdateCase={handleUpdateCase}
-            onAddNote={handleAddNote}
-            onApproveAction={handleApproveAction}
-            onRejectAction={handleRejectAction}
-          />
-        </section>
+            <section className="workbench-grid">
+              <IncidentTable
+                incidents={filteredIncidents}
+                incidentDetails={incidentDetails}
+                loading={listLoading}
+                selectedAlertId={selectedAlertId}
+                selectedRows={selectedRows}
+                search={search}
+                riskFilter={riskFilter}
+                caseFilter={caseFilter}
+                savedFilters={savedFilters}
+                onSearchChange={(value) => startTransition(() => setSearch(value))}
+                onRiskFilterChange={(value) => setRiskFilter(value)}
+                onCaseFilterChange={(value) => setCaseFilter(value)}
+                onToggleRow={(alertId) =>
+                  setSelectedRows((current) =>
+                    current.includes(alertId) ? current.filter((item) => item !== alertId) : [...current, alertId],
+                  )
+                }
+                onToggleAll={(checked) =>
+                  setSelectedRows(checked ? filteredIncidents.map((incident) => incident.alert_id) : [])
+                }
+                onSelect={setSelectedAlertId}
+                onBulkUpdate={handleBulkUpdate}
+                onApplySavedFilter={applySavedFilter}
+                onSaveCurrentFilter={handleSaveCurrentFilter}
+              />
+              <IncidentDetail
+                incident={selectedIncident}
+                loading={detailLoading}
+                onUpdateCase={handleUpdateCase}
+                onAddNote={handleAddNote}
+                onApproveAction={handleApproveAction}
+                onRejectAction={handleRejectAction}
+              />
+            </section>
+          </>
+        ) : null}
       </main>
     </div>
   );

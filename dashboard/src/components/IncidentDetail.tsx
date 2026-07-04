@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { actionLabel, formatDateTime, formatRiskScore, riskTone, statusLabel, titleCase } from "../lib/format";
-import { buildIncidentReportUrl } from "../services/soarApi";
+import { openIncidentReport } from "../services/soarApi";
 import type { IncidentCaseStatus, IncidentRecord, QueuedActionRequest, RiskBreakdownComponent } from "../types";
 
 interface IncidentDetailProps {
@@ -269,11 +269,15 @@ export function IncidentDetail({
   const [caseOwnerDraft, setCaseOwnerDraft] = useState("");
   const [caseStatusDraft, setCaseStatusDraft] = useState<IncidentCaseStatus>("new");
   const [noteDraft, setNoteDraft] = useState("");
+  const [reportOpenError, setReportOpenError] = useState<string | null>(null);
+  const [openingReport, setOpeningReport] = useState(false);
 
   useEffect(() => {
     setCaseOwnerDraft(incident?.case_owner ?? "");
     setCaseStatusDraft((incident?.case_status ?? "new") as IncidentCaseStatus);
     setNoteDraft("");
+    setReportOpenError(null);
+    setOpeningReport(false);
   }, [incident?.alert_id, incident?.case_owner, incident?.case_status]);
 
   if (loading) {
@@ -310,7 +314,6 @@ export function IncidentDetail({
   };
   const queuedActions = executionTrace.queued_actions ?? [];
   const reportHtmlPath = incident.report.html_path ?? incident.report_path;
-  const reportUrl = reportHtmlPath ? buildIncidentReportUrl(incident.alert_id) : null;
   const reportArtifacts = [
     { label: "Markdown", value: incident.report.markdown_path },
     { label: "HTML", value: reportHtmlPath },
@@ -786,12 +789,28 @@ export function IncidentDetail({
         <article className="soft-card report-preview-card">
           <div className="report-head">
             <strong className="card-title">Report preview</strong>
-            {reportUrl ? (
-              <a className="report-link" href={reportUrl} rel="noreferrer" target="_blank">
+            {reportHtmlPath ? (
+              <button
+                className="secondary-button compact-button"
+                disabled={openingReport}
+                onClick={async () => {
+                  setOpeningReport(true);
+                  setReportOpenError(null);
+                  try {
+                    await openIncidentReport(incident.alert_id);
+                  } catch (error) {
+                    setReportOpenError(error instanceof Error ? error.message : "Unable to open the HTML report.");
+                  } finally {
+                    setOpeningReport(false);
+                  }
+                }}
+                type="button"
+              >
                 Open HTML report
-              </a>
+              </button>
             ) : null}
           </div>
+          {reportOpenError ? <div className="banner banner-error">{reportOpenError}</div> : null}
           {reportArtifacts.length > 0 ? (
             <div className="artifact-list">
               {reportArtifacts.map((artifact) => (

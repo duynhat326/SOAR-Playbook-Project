@@ -23,9 +23,8 @@ Minimum runtime setup:
 
 ```env
 SUPABASE_DB_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
-SOAR_AUTH_TOKENS_JSON={"tokens":[{"token":"incident-operator-token","principal_id":"incident-operator","principal_type":"user","roles":["incident_process","incident_read"],"workspaces":["*"]}]}
+SOAR_AUTH_TOKENS_JSON={"tokens":[{"token":"<generate-a-long-random-token>","principal_id":"incident-operator","principal_type":"user","roles":["incident_process","incident_read"],"workspaces":["*"]}]}
 SOAR_API_PROXY_TARGET=http://127.0.0.1:8000
-SOAR_API_PROXY_TOKEN=incident-operator-token
 ```
 
 Optional overrides:
@@ -42,9 +41,15 @@ Behavior:
 - `SUPABASE_DB_URL` is the common fallback connection
 - `SOAR_DATABASE_URL` overrides the incident repository target
 - `SOAR_A2A_DB_URL` overrides the A2A repository target
-- `SOAR_API_PROXY_TARGET` and `SOAR_API_PROXY_TOKEN` are read by `dashboard/vite.config.ts`
-- `dashboard/api/*.js` uses the same `SOAR_API_PROXY_TARGET` and `SOAR_API_PROXY_TOKEN` values for production proxying on Vercel
+- `SOAR_API_PROXY_TARGET` is read by `dashboard/vite.config.ts`
+- `dashboard/api/*.js` uses the same `SOAR_API_PROXY_TARGET` value for production proxying on Vercel
 - repo-root `.env.local` is visible to Vite because the dashboard uses `envDir: ".."`
+
+Dashboard auth note:
+
+- the proxy no longer injects a shared bearer token
+- after the UI loads, paste the operator token into the dashboard session prompt
+- the browser stores that token only in tab-scoped `sessionStorage`
 
 ## 3. Optional live VirusTotal enrichment
 

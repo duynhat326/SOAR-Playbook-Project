@@ -235,6 +235,12 @@ const readinessPayload = {
   queue_metrics: { total_jobs: 1, waiting_approval_jobs: 1 },
 };
 
+async function installDashboardSessionToken(page: Page) {
+  await page.addInitScript(() => {
+    window.sessionStorage.setItem("soar.dashboard.authToken", "playwright-session-token");
+  });
+}
+
 async function mockDashboardApi(page: Page) {
   const context = page.context();
   await context.route("**/api/v1/dashboard/bootstrap", async (route) => {
@@ -274,6 +280,7 @@ async function mockDashboardApi(page: Page) {
 }
 
 test("dashboard loads incident list and case detail from API contracts", async ({ page }) => {
+  await installDashboardSessionToken(page);
   await mockDashboardApi(page);
 
   await page.goto("/");
@@ -287,14 +294,14 @@ test("dashboard loads incident list and case detail from API contracts", async (
   await expect(page.getByRole("button", { name: "Approve" })).toBeVisible();
 });
 
-test("report link opens HTML artifact flow", async ({ context, page }) => {
+test("report link opens HTML artifact flow", async ({ page }) => {
+  await installDashboardSessionToken(page);
   await mockDashboardApi(page);
 
   await page.goto("/");
 
-  const href = await page.getByRole("link", { name: "Open HTML report" }).getAttribute("href");
-  expect(href).toContain("/api/v1/incidents/by-alert/smoke-alert-1/report/html");
-
-  await page.goto(href!);
-  await expect(page.getByRole("heading", { name: "Incident Report" })).toBeVisible();
+  const reportRequestPromise = page.waitForRequest("**/api/v1/incidents/by-alert/smoke-alert-1/report/html");
+  await page.getByRole("button", { name: "Open HTML report" }).click();
+  const reportRequest = await reportRequestPromise;
+  expect(reportRequest.headers()["authorization"]).toBe("Bearer playwright-session-token");
 });

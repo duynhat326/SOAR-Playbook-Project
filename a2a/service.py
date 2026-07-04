@@ -40,13 +40,13 @@ def resolve_db_target(raw_path: Optional[str | Path] = None) -> str | Path:
     if raw_path is not None:
         return raw_path
 
-    explicit_postgres = os.getenv("SOAR_A2A_DB_URL") or os.getenv("SUPABASE_DB_URL")
-    if explicit_postgres:
-        return resolve_database_url(explicit_postgres, preferred_env="SOAR_A2A_DB_URL")
-
     env_path = os.getenv("SOAR_A2A_DB_PATH")
     if env_path:
         return Path(env_path)
+
+    explicit_postgres = os.getenv("SOAR_A2A_DB_URL") or os.getenv("SUPABASE_DB_URL")
+    if explicit_postgres:
+        return resolve_database_url(explicit_postgres, preferred_env="SOAR_A2A_DB_URL")
 
     raise RuntimeError(
         "A2A persistence now expects Supabase Postgres. Set SOAR_A2A_DB_URL or SUPABASE_DB_URL."

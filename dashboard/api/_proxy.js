@@ -30,10 +30,6 @@ function resolveProxyTarget() {
   return target;
 }
 
-function resolveProxyToken() {
-  return (process.env.SOAR_API_PROXY_TOKEN || process.env.SOAR_AUTH_TOKEN || "").trim();
-}
-
 function copyRequestHeaders(req) {
   const nextHeaders = new Headers();
 
@@ -86,11 +82,6 @@ export async function proxyRequest(req, res, upstreamPath) {
     const search = new URL(req.url || "/", "http://localhost").search;
     const upstreamUrl = `${target}${upstreamPath}${search}`;
     const headers = copyRequestHeaders(req);
-    const proxyToken = resolveProxyToken();
-
-    if (proxyToken) {
-      headers.set("authorization", `Bearer ${proxyToken}`);
-    }
 
     const upstreamResponse = await fetch(upstreamUrl, {
       method: req.method,
