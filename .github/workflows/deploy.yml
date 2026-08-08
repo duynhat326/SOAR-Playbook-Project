@@ -1,0 +1,53 @@
+name: deploy
+
+"on":
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      image_tag:
+        description: Image tag already published to GHCR
+        required: true
+        type: string
+      deploy_postgres:
+        description: Deploy bundled Postgres profile
+        required: true
+        default: false
+        type: boolean
+      run_migrations:
+        description: Run Postgres migrations before rollout
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run remote Compose rollout
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME || github.actor }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          SOAR_DEPLOY_ENV_FILE: ${{ secrets.SOAR_DEPLOY_ENV_FILE }}
+          SOAR_ENVIRONMENT_NAME: ${{ inputs.environment }}
+          SOAR_IMAGE_NAMESPACE: ${{ github.repository_owner }}
+          SOAR_IMAGE_TAG: ${{ inputs.image_tag }}
+          DEPLOY_WITH_POSTGRES: ${{ inputs.deploy_postgres }}
+          RUN_DB_MIGRATIONS: ${{ inputs.run_migrations }}
+        run: bash scripts/deploy_remote_compose.sh

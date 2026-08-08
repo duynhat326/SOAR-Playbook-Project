@@ -1,0 +1,31 @@
+{
+  "alertId": "defender-alert-001",
+  "title": "Credential dumping tool contacted known C2 infrastructure",
+  "severity": "high",
+  "createdTime": "2026-08-08T08:45:00Z",
+  "machine": {
+    "computerDnsName": "ws-finance-01.corp.local"
+  },
+  "userStates": [
+    {
+      "accountName": "FINANCE\\cfo"
+    }
+  ],
+  "evidence": [
+    {
+      "entityType": "Process",
+      "fileName": "mimikatz.exe",
+      "processCommandLine": "mimikatz.exe privilege::debug sekurlsa::logonpasswords exit",
+      "parentProcessFileName": "explorer.exe"
+    },
+    {
+      "entityType": "File",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+      "filePath": "C:\\Users\\cfo\\AppData\\Local\\Temp\\mimikatz.exe"
+    },
+    {
+      "entityType": "Ip",
+      "ipAddress": "185.220.101.45"
+    }
+  ]
+}

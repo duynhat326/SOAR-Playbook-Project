@@ -633,9 +633,17 @@ function actionResultList(actions: string[], completedAt: string): ActionResult[
     requires_approval: false,
     approval_state: "not_required",
     approval_reason: null,
+    approval_comment: null,
     approved_by: null,
     approved_at: null,
+    approval_due_at: null,
+    approval_escalates_at: null,
+    escalation_targets: [],
+    approval_escalated_at: null,
+    rollback_requested_by: null,
+    rollback_requested_at: null,
     operator: "mock-policy-engine",
+    policy_version: 1,
   }));
 }
 
@@ -669,6 +677,8 @@ function toSummary(record: IncidentRecord): IncidentSummary {
   return {
     id: record.id,
     alert_id: record.alert_id,
+    incident_key: record.incident_key,
+    latest_alert_id: record.latest_alert_id,
     hostname: record.hostname,
     detection_name: record.detection_name,
     risk_score: record.risk_score,
@@ -689,6 +699,7 @@ function toSummary(record: IncidentRecord): IncidentSummary {
     succeeded_action_count,
     active_action_count: queued_action_count + running_action_count,
     note_count: record.note_count,
+    related_alert_count: record.related_alert_count,
   };
 }
 
@@ -722,12 +733,26 @@ function createIncident(alertInput: MalwareAlert, minutesAgo = 0): IncidentRecor
     ticket_id: ticketForAlert(alert, profile.riskLevel),
     completed_at: completedAt,
     report_path: `/reports/${alert.alert_id}.md`,
+    correlation_trace: {
+      enabled: true,
+      window: "1h",
+      outcome: "new_incident" as const,
+      incident_key: `incident-${alert.alert_id}`,
+      matched_incident_id: null,
+      matched_alert_ids: [],
+      related_alert_ids: [alert.alert_id],
+      related_alert_count: 1,
+      evidence: [],
+      candidate_fingerprints: [],
+    },
   };
   const report = reportForAlert(alert, profile, completedAt);
 
   return {
     id: generateIncidentId(alert.alert_id),
     alert_id: alert.alert_id,
+    incident_key: `incident-${alert.alert_id}`,
+    latest_alert_id: alert.alert_id,
     hostname: alert.hostname,
     detection_name: alert.detection_name,
     risk_score: profile.riskScore,
@@ -756,6 +781,8 @@ function createIncident(alertInput: MalwareAlert, minutesAgo = 0): IncidentRecor
     enriched_alert: enrichedAlert,
     notes: [],
     audit_events: [],
+    related_alert_ids: [alert.alert_id],
+    related_alert_count: 1,
   };
 }
 

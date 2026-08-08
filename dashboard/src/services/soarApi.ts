@@ -361,13 +361,39 @@ function normalizeActionResult(payload: any): ActionResult {
       typeof payload?.approval_reason === "string" && payload.approval_reason.trim().length > 0
         ? payload.approval_reason
         : null,
+    approval_comment:
+      typeof payload?.approval_comment === "string" && payload.approval_comment.trim().length > 0
+        ? payload.approval_comment
+        : null,
     approved_by:
       typeof payload?.approved_by === "string" && payload.approved_by.trim().length > 0
         ? payload.approved_by
         : null,
     approved_at:
       typeof payload?.approved_at === "string" && payload.approved_at.trim().length > 0 ? payload.approved_at : null,
+    approval_due_at:
+      typeof payload?.approval_due_at === "string" && payload.approval_due_at.trim().length > 0
+        ? payload.approval_due_at
+        : null,
+    approval_escalates_at:
+      typeof payload?.approval_escalates_at === "string" && payload.approval_escalates_at.trim().length > 0
+        ? payload.approval_escalates_at
+        : null,
+    escalation_targets: normalizeStringList(payload?.escalation_targets),
+    approval_escalated_at:
+      typeof payload?.approval_escalated_at === "string" && payload.approval_escalated_at.trim().length > 0
+        ? payload.approval_escalated_at
+        : null,
+    rollback_requested_by:
+      typeof payload?.rollback_requested_by === "string" && payload.rollback_requested_by.trim().length > 0
+        ? payload.rollback_requested_by
+        : null,
+    rollback_requested_at:
+      typeof payload?.rollback_requested_at === "string" && payload.rollback_requested_at.trim().length > 0
+        ? payload.rollback_requested_at
+        : null,
     operator: typeof payload?.operator === "string" && payload.operator.trim().length > 0 ? payload.operator : null,
+    policy_version: typeof payload?.policy_version === "number" ? payload.policy_version : null,
   };
 }
 
@@ -410,10 +436,35 @@ function normalizeQueuedActionRequest(payload: any): QueuedActionRequest {
       typeof payload?.approval_reason === "string" && payload.approval_reason.trim().length > 0
         ? payload.approval_reason
         : null,
+    approval_comment:
+      typeof payload?.approval_comment === "string" && payload.approval_comment.trim().length > 0
+        ? payload.approval_comment
+        : null,
     approved_by:
       typeof payload?.approved_by === "string" && payload.approved_by.trim().length > 0 ? payload.approved_by : null,
     approved_at:
       typeof payload?.approved_at === "string" && payload.approved_at.trim().length > 0 ? payload.approved_at : null,
+    approval_due_at:
+      typeof payload?.approval_due_at === "string" && payload.approval_due_at.trim().length > 0
+        ? payload.approval_due_at
+        : null,
+    approval_escalates_at:
+      typeof payload?.approval_escalates_at === "string" && payload.approval_escalates_at.trim().length > 0
+        ? payload.approval_escalates_at
+        : null,
+    escalation_targets: normalizeStringList(payload?.escalation_targets),
+    approval_escalated_at:
+      typeof payload?.approval_escalated_at === "string" && payload.approval_escalated_at.trim().length > 0
+        ? payload.approval_escalated_at
+        : null,
+    rollback_requested_by:
+      typeof payload?.rollback_requested_by === "string" && payload.rollback_requested_by.trim().length > 0
+        ? payload.rollback_requested_by
+        : null,
+    rollback_requested_at:
+      typeof payload?.rollback_requested_at === "string" && payload.rollback_requested_at.trim().length > 0
+        ? payload.rollback_requested_at
+        : null,
     requested_at:
       typeof payload?.requested_at === "string" && payload.requested_at.trim().length > 0 ? payload.requested_at : undefined,
   };
@@ -436,6 +487,12 @@ function normalizeIncidentAuditEvent(payload: any): IncidentAuditEvent {
     actor: String(payload?.actor ?? ""),
     message: String(payload?.message ?? ""),
     payload: normalizeObjectRecord(payload?.payload),
+    previous_event_hash:
+      typeof payload?.previous_event_hash === "string" && payload.previous_event_hash.trim().length > 0
+        ? payload.previous_event_hash
+        : null,
+    event_hash:
+      typeof payload?.event_hash === "string" && payload.event_hash.trim().length > 0 ? payload.event_hash : null,
     created_at: String(payload?.created_at ?? new Date().toISOString()),
   };
 }
@@ -452,6 +509,43 @@ function normalizeExecutionTrace(payload: any): ExecutionTrace {
         : null,
     queued_actions: Array.isArray(payload?.queued_actions)
       ? payload.queued_actions.map(normalizeQueuedActionRequest)
+      : [],
+  };
+}
+
+function normalizeCorrelationEvidence(payload: any) {
+  return {
+    strategy: String(payload?.strategy ?? ""),
+    fields: normalizeStringList(payload?.fields),
+    fingerprint: String(payload?.fingerprint ?? ""),
+    values: Object.fromEntries(
+      Object.entries(normalizeObjectRecord(payload?.values)).map(([key, value]) => [key, String(value)]),
+    ),
+    matched_alert_ids: normalizeStringList(payload?.matched_alert_ids),
+  };
+}
+
+function normalizeCorrelationTrace(payload: any) {
+  return {
+    enabled: Boolean(payload?.enabled),
+    window:
+      typeof payload?.window === "string" && payload.window.trim().length > 0 ? payload.window : null,
+    outcome:
+      payload?.outcome === "attached_to_existing" || payload?.outcome === "reopened_incident"
+        ? payload.outcome
+        : "new_incident",
+    incident_key:
+      typeof payload?.incident_key === "string" && payload.incident_key.trim().length > 0
+        ? payload.incident_key
+        : null,
+    matched_incident_id:
+      typeof payload?.matched_incident_id === "number" ? payload.matched_incident_id : null,
+    matched_alert_ids: normalizeStringList(payload?.matched_alert_ids),
+    related_alert_ids: normalizeStringList(payload?.related_alert_ids),
+    related_alert_count: Number(payload?.related_alert_count ?? 1),
+    evidence: Array.isArray(payload?.evidence) ? payload.evidence.map(normalizeCorrelationEvidence) : [],
+    candidate_fingerprints: Array.isArray(payload?.candidate_fingerprints)
+      ? payload.candidate_fingerprints.map(normalizeCorrelationEvidence)
       : [],
   };
 }
@@ -558,6 +652,7 @@ function normalizeIncidentRecord(payload: any): IncidentRecord {
     ticket_id: payload.ticket_id ?? responsePayload.ticket_id ?? null,
     completed_at: completedAt,
     report_path: payload.report_path ?? responsePayload.report_path ?? null,
+    correlation_trace: normalizeCorrelationTrace(responsePayload.correlation_trace),
     execution_trace: normalizeExecutionTrace(responsePayload.execution_trace),
   };
   const report = normalizeReportArtifacts(payload.report, response.report_path);
@@ -565,6 +660,8 @@ function normalizeIncidentRecord(payload: any): IncidentRecord {
   return {
     id: Number(payload.id ?? 0),
     alert_id: String(payload.alert_id ?? alert.alert_id ?? ""),
+    incident_key: String(payload.incident_key ?? `incident-${payload.alert_id ?? alert.alert_id ?? ""}`),
+    latest_alert_id: String(payload.latest_alert_id ?? payload.alert_id ?? alert.alert_id ?? ""),
     hostname: String(payload.hostname ?? alert.hostname ?? ""),
     detection_name: String(payload.detection_name ?? alert.detection_name ?? ""),
     risk_score: Number(payload.risk_score ?? enriched.risk_score ?? 0),
@@ -600,6 +697,8 @@ function normalizeIncidentRecord(payload: any): IncidentRecord {
     enriched_alert: enriched,
     notes: Array.isArray(payload?.notes) ? payload.notes.map(normalizeIncidentNote) : [],
     audit_events: Array.isArray(payload?.audit_events) ? payload.audit_events.map(normalizeIncidentAuditEvent) : [],
+    related_alert_ids: normalizeStringList(payload?.related_alert_ids),
+    related_alert_count: Number(payload?.related_alert_count ?? 1),
   };
 }
 
@@ -607,6 +706,8 @@ function normalizeIncidentSummary(payload: any): IncidentSummary {
   return {
     id: Number(payload.id ?? 0),
     alert_id: String(payload.alert_id ?? ""),
+    incident_key: String(payload.incident_key ?? `incident-${payload.alert_id ?? ""}`),
+    latest_alert_id: String(payload.latest_alert_id ?? payload.alert_id ?? ""),
     hostname: String(payload.hostname ?? ""),
     detection_name: String(payload.detection_name ?? ""),
     risk_score: Number(payload.risk_score ?? 0),
@@ -627,6 +728,7 @@ function normalizeIncidentSummary(payload: any): IncidentSummary {
     succeeded_action_count: Number(payload?.succeeded_action_count ?? 0),
     active_action_count: Number(payload?.active_action_count ?? 0),
     note_count: Number(payload?.note_count ?? 0),
+    related_alert_count: Number(payload?.related_alert_count ?? 1),
   };
 }
 
@@ -656,6 +758,7 @@ function normalizeReadiness(payload: any): ReadinessState {
     status: String(payload?.status ?? "degraded"),
     dependencies: Array.isArray(payload?.dependencies) ? payload.dependencies.map(normalizeDependencyReadiness) : [],
     queue_metrics: normalizeObjectRecord(payload?.queue_metrics),
+    observability: normalizeObjectRecord(payload?.observability),
   };
 }
 
@@ -833,6 +936,38 @@ export async function rejectAction(
         body: JSON.stringify(payload),
       },
     );
+    return normalizeIncidentRecord(response);
+  });
+  return { mode: result.mode, incident: result.data };
+}
+
+export async function rollbackAction(
+  alertId: string,
+  correlationId: string,
+  payload: { actor: string; comment?: string },
+): Promise<{ mode: ApiMode; incident: IncidentRecord }> {
+  const result = await apiOnly(async () => {
+    const response = await requestJson<any>(
+      `/api/v1/incidents/by-alert/${encodeURIComponent(alertId)}/actions/${encodeURIComponent(correlationId)}/rollback`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    );
+    return normalizeIncidentRecord(response);
+  });
+  return { mode: result.mode, incident: result.data };
+}
+
+export async function reopenIncident(
+  alertId: string,
+  payload: { comment?: string } = {},
+): Promise<{ mode: ApiMode; incident: IncidentRecord }> {
+  const result = await apiOnly(async () => {
+    const response = await requestJson<any>(`/api/v1/incidents/by-alert/${encodeURIComponent(alertId)}/reopen`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
     return normalizeIncidentRecord(response);
   });
   return { mode: result.mode, incident: result.data };

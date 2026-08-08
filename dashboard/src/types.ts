@@ -5,7 +5,9 @@ export type ActionApprovalState = "not_required" | "pending" | "approved" | "rej
 export type HashReputation = "clean" | "suspicious" | "malicious" | "unknown";
 export type IPReputation = "clean" | "unknown" | "malicious";
 export type AssetCriticality = "low" | "normal" | "critical";
+export type PolicyStatus = "draft" | "active" | "disabled" | "deprecated";
 export type IncidentCaseStatus = "new" | "triaged" | "in_progress" | "monitoring" | "resolved" | "closed";
+export type CorrelationOutcome = "new_incident" | "attached_to_existing" | "reopened_incident";
 export type ScenarioKey =
   | "malicious_hash"
   | "c2_communication"
@@ -119,9 +121,17 @@ export interface ActionResult {
   requires_approval: boolean;
   approval_state: ActionApprovalState;
   approval_reason?: string | null;
+  approval_comment?: string | null;
   approved_by?: string | null;
   approved_at?: string | null;
+  approval_due_at?: string | null;
+  approval_escalates_at?: string | null;
+  escalation_targets: string[];
+  approval_escalated_at?: string | null;
+  rollback_requested_by?: string | null;
+  rollback_requested_at?: string | null;
   operator?: string | null;
+  policy_version?: number | null;
 }
 
 export interface CorrelationHook {
@@ -139,8 +149,15 @@ export interface QueuedActionRequest {
   requires_approval: boolean;
   approval_state: ActionApprovalState;
   approval_reason?: string | null;
+  approval_comment?: string | null;
   approved_by?: string | null;
   approved_at?: string | null;
+  approval_due_at?: string | null;
+  approval_escalates_at?: string | null;
+  escalation_targets: string[];
+  approval_escalated_at?: string | null;
+  rollback_requested_by?: string | null;
+  rollback_requested_at?: string | null;
   requested_at?: string;
 }
 
@@ -150,6 +167,42 @@ export interface ExecutionTrace {
   queue_name?: string | null;
   fallback_reason?: string | null;
   queued_actions: QueuedActionRequest[];
+  policy_version?: number | null;
+  policy_status?: PolicyStatus | null;
+  canary_enabled?: boolean;
+  canary_targeted?: boolean | null;
+  canary_reason?: string | null;
+  canary_percentage?: number | null;
+  canary_bucket?: number | null;
+}
+
+export interface PolicyMetadataSnapshot {
+  version: number;
+  status: PolicyStatus;
+  owner: string;
+  change_reason: string;
+  created_at: string;
+}
+
+export interface CorrelationEvidence {
+  strategy: string;
+  fields: string[];
+  fingerprint: string;
+  values: Record<string, string>;
+  matched_alert_ids: string[];
+}
+
+export interface IncidentCorrelationTrace {
+  enabled: boolean;
+  window?: string | null;
+  outcome: CorrelationOutcome;
+  incident_key?: string | null;
+  matched_incident_id?: number | null;
+  matched_alert_ids: string[];
+  related_alert_ids: string[];
+  related_alert_count: number;
+  evidence: CorrelationEvidence[];
+  candidate_fingerprints: CorrelationEvidence[];
 }
 
 export interface ReportArtifacts {
@@ -167,12 +220,17 @@ export interface IncidentResponse {
   ticket_id?: string | null;
   completed_at: string;
   report_path?: string | null;
+  policy_version?: number | null;
+  policy_metadata?: PolicyMetadataSnapshot | null;
+  correlation_trace?: IncidentCorrelationTrace;
   execution_trace?: ExecutionTrace;
 }
 
 export interface IncidentSummary {
   id: number;
   alert_id: string;
+  incident_key: string;
+  latest_alert_id: string;
   hostname: string;
   detection_name: string;
   risk_score: number;
@@ -193,6 +251,7 @@ export interface IncidentSummary {
   succeeded_action_count: number;
   active_action_count: number;
   note_count: number;
+  related_alert_count: number;
 }
 
 export interface IncidentNote {
@@ -209,6 +268,8 @@ export interface IncidentAuditEvent {
   actor: string;
   message: string;
   payload: Record<string, unknown>;
+  previous_event_hash?: string | null;
+  event_hash?: string | null;
   created_at: string;
 }
 
@@ -224,6 +285,7 @@ export interface IncidentRecord extends IncidentSummary {
   enriched_alert: EnrichedAlert;
   notes: IncidentNote[];
   audit_events: IncidentAuditEvent[];
+  related_alert_ids: string[];
 }
 
 export interface ScenarioOption {
@@ -269,6 +331,7 @@ export interface ReadinessState {
   status: string;
   dependencies: DependencyReadiness[];
   queue_metrics: Record<string, unknown>;
+  observability: Record<string, unknown>;
 }
 
 export type ProcessAlertInput =

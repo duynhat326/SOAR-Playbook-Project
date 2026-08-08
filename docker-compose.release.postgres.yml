@@ -1,0 +1,48 @@
+services:
+  api:
+    environment:
+      SOAR_DB_TARGET: ""
+      SOAR_DATABASE_URL: postgresql://${SOAR_POSTGRES_USER:-soar}:${SOAR_POSTGRES_PASSWORD:-soar}@postgres:5432/${SOAR_POSTGRES_DB:-soar}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    environment:
+      SOAR_DB_TARGET: ""
+      SOAR_DATABASE_URL: postgresql://${SOAR_POSTGRES_USER:-soar}:${SOAR_POSTGRES_PASSWORD:-soar}@postgres:5432/${SOAR_POSTGRES_DB:-soar}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  migrate:
+    environment:
+      SOAR_DB_TARGET: ""
+      SOAR_DATABASE_URL: postgresql://${SOAR_POSTGRES_USER:-soar}:${SOAR_POSTGRES_PASSWORD:-soar}@postgres:5432/${SOAR_POSTGRES_DB:-soar}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    profiles:
+      - postgres
+    environment:
+      POSTGRES_DB: ${SOAR_POSTGRES_DB:-soar}
+      POSTGRES_USER: ${SOAR_POSTGRES_USER:-soar}
+      POSTGRES_PASSWORD: ${SOAR_POSTGRES_PASSWORD:-soar}
+    ports:
+      - "${SOAR_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - soar_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  soar_postgres:

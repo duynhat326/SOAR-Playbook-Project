@@ -205,6 +205,7 @@ export function IncidentTable({
                     {fact("Process", processName)}
                     {fact("IP", destinationIp)}
                     {fact("Status", statusLabel(incident.status))}
+                    {fact("Grouped", `${incident.related_alert_count}`)}
                     {fact(
                       "Queue",
                       `Q${incident.queued_action_count} A${incident.pending_approval_count} R${incident.running_action_count} F${incident.failed_action_count}`,

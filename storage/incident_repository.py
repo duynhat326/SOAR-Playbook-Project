@@ -14,6 +14,7 @@ from storage.sqlite_repository import MAX_INCIDENT_LIST_LIMIT, SQLiteIncidentRep
 from time_utils import utc_now
 
 if TYPE_CHECKING:
+    from services.incident_correlation import CorrelationFingerprint
     from services.workflow_service import WorkflowResult
 
 _ACTION_STATUS_ACTIVE = {"queued", "running"}
@@ -156,6 +157,13 @@ class IncidentRepositoryProtocol(Protocol):
         *,
         last_error: str,
     ) -> None: ...
+    def find_correlated_incident(
+        self,
+        fingerprints: list["CorrelationFingerprint"],
+        *,
+        observed_at: datetime,
+        window: Any,
+    ) -> Optional[dict[str, Any]]: ...
     def get_incident_by_alert_id(self, alert_id: str) -> Optional[dict[str, Any]]: ...
     def get_incident_by_ticket_id(self, ticket_id: str) -> Optional[dict[str, Any]]: ...
     def list_incidents(
@@ -212,6 +220,26 @@ class IncidentRepositoryProtocol(Protocol):
         actor: str,
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]: ...
+    def rollback_action_job(
+        self,
+        alert_id: str,
+        correlation_id: str,
+        *,
+        actor: str,
+        comment: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]: ...
+    def reopen_incident(
+        self,
+        alert_id: str,
+        *,
+        actor: str,
+        comment: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]: ...
+    def escalate_overdue_approvals(
+        self,
+        *,
+        actor: str,
+    ) -> list[dict[str, Any]]: ...
     def save_filter(
         self,
         *,
@@ -856,6 +884,32 @@ class SupabaseIncidentRepository:
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         raise NotImplementedError("Approval workflow is currently supported on the SQLite repository.")
+
+    def rollback_action_job(
+        self,
+        alert_id: str,
+        correlation_id: str,
+        *,
+        actor: str,
+        comment: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        raise NotImplementedError("Rollback workflow is currently supported on the SQLite repository.")
+
+    def reopen_incident(
+        self,
+        alert_id: str,
+        *,
+        actor: str,
+        comment: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        raise NotImplementedError("Incident reopen workflow is currently supported on the SQLite repository.")
+
+    def escalate_overdue_approvals(
+        self,
+        *,
+        actor: str,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError("Approval escalation is currently supported on the SQLite repository.")
 
     def save_filter(
         self,

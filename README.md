@@ -8,7 +8,7 @@
 ![React](https://img.shields.io/badge/React-Primary%20Dashboard-61DAFB?style=for-the-badge&logo=react&logoColor=0B1020)
 ![Supabase](https://img.shields.io/badge/Supabase-Postgres%20Persistence-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
 ![VirusTotal](https://img.shields.io/badge/VirusTotal-Live%20Hash%20Intel-394EFF?style=for-the-badge)
-![pytest](https://img.shields.io/badge/pytest-70%20tests%20passing-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-71%20tests%20passing-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
 ![Security](https://img.shields.io/badge/RBAC-Enabled-8B5CF6?style=for-the-badge)
 
 **Blue Team CV Project for SOC analyst workflow automation**
@@ -442,9 +442,9 @@ SOAR Playbook/
 
 ## Verification Snapshot
 
-Latest verified in this repo on 2026-08-07:
+Latest verified in this repo on 2026-08-08:
 
-- `pytest tests -q` -> `70 passed`
+- `pytest tests -q` -> `71 passed`
 - `cmd /c npm run build` in `dashboard/` -> passed
 - live Supabase persistence path verified through incident processing
 - live VirusTotal-backed enrichment path exercised in the workflow

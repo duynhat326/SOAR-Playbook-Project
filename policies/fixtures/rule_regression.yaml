@@ -1,0 +1,120 @@
+suite_name: default-policy-regression
+fixtures:
+  - fixture_id: malicious-hash-isolates
+    description: Malicious hash should isolate, open ticket, and notify SOC under the default sync policy.
+    alert:
+      alert_id: replay-malhash-001
+      hostname: DESKTOP-ABC123
+      username: test.user
+      process_name: powershell.exe
+      file_path: C:\Temp\payload.exe
+      file_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+      parent_process: explorer.exe
+      command_line: powershell.exe -enc U29ja2V0
+      destination_ip: 198.51.100.10
+      severity: high
+      detection_name: Replay.MaliciousHash
+    enrichment_overrides:
+      hash_enrichment:
+        hash_value: "0000000000000000000000000000000000000000000000000000000000000000"
+        reputation: malicious
+        malicious_vendors: 58
+        total_vendors: 72
+        threat_name: Trojan.GenericKD.48756123
+        source: replay_fixture
+      ip_enrichment:
+        ip_address: 198.51.100.10
+        reputation: clean
+        confidence_score: 0
+        is_c2: false
+        source: replay_fixture
+      asset_criticality: low
+      asset_info:
+        environment: prod
+        workspace: hq
+        tags:
+          - general-user
+      risk_score: 72.0
+      risk_level: high
+    expect:
+      triggered_actions:
+        - isolate_host
+        - create_ticket
+        - notify_soc
+      action_statuses:
+        isolate_host: succeeded
+        create_ticket: succeeded
+        notify_soc: succeeded
+      effective_mode: sync
+      ticket_expected: true
+      policy_reasoning_contains:
+        - "Rule 1 [TRIGGERED]"
+
+  - fixture_id: dangerous-process-kills
+    description: Dangerous process should be terminated under the default sync policy.
+    alert:
+      alert_id: replay-proc-001
+      hostname: DESKTOP-ABC123
+      username: test.user
+      process_name: mimikatz.exe
+      file_path: C:\Temp\mimikatz.exe
+      file_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+      parent_process: cmd.exe
+      command_line: mimikatz.exe privilege::debug sekurlsa::logonpasswords exit
+      destination_ip: 198.51.100.10
+      severity: high
+      detection_name: Replay.DangerousProcess
+    enrichment_overrides:
+      risk_score: 65.0
+      risk_level: high
+    expect:
+      triggered_actions:
+        - kill_process
+        - create_ticket
+        - notify_soc
+      action_statuses:
+        kill_process: succeeded
+        create_ticket: succeeded
+        notify_soc: succeeded
+      effective_mode: sync
+      ticket_expected: true
+      policy_reasoning_contains:
+        - "Rule 2 [TRIGGERED]"
+
+  - fixture_id: benign-alert-stays-manual
+    description: Benign traffic should only create a case and notify SOC.
+    alert:
+      alert_id: replay-benign-001
+      hostname: DESKTOP-ABC123
+      username: test.user
+      process_name: powershell.exe
+      file_path: C:\Temp\backup.ps1
+      file_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+      parent_process: explorer.exe
+      command_line: powershell.exe -File C:\scripts\backup.ps1
+      destination_ip: 198.51.100.10
+      severity: low
+      detection_name: Replay.Benign
+    enrichment_overrides:
+      hash_enrichment:
+        hash_value: "2222222222222222222222222222222222222222222222222222222222222222"
+        reputation: clean
+        source: replay_fixture
+      ip_enrichment:
+        ip_address: 198.51.100.10
+        reputation: clean
+        confidence_score: 0
+        is_c2: false
+        source: replay_fixture
+      asset_criticality: low
+      risk_score: 10.0
+      risk_level: low
+    expect:
+      triggered_actions:
+        - create_ticket
+        - notify_soc
+      action_statuses:
+        create_ticket: succeeded
+        notify_soc: succeeded
+      effective_mode: sync
+      ticket_expected: true

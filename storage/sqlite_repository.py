@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 from uuid import uuid4
 
 from schemas.alert import (
     ActionApprovalState,
     ActionResult,
+    CorrelationOutcome,
     IncidentAuditEvent,
     IncidentCaseStatus,
     IncidentNote,
@@ -19,6 +21,7 @@ from schemas.alert import (
 from time_utils import utc_now
 
 if TYPE_CHECKING:
+    from services.incident_correlation import CorrelationFingerprint
     from services.workflow_service import WorkflowResult
 
 MAX_INCIDENT_LIST_LIMIT = 200
@@ -72,6 +75,8 @@ class SQLiteIncidentRepository:
                 CREATE TABLE IF NOT EXISTS incidents (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     alert_id TEXT NOT NULL UNIQUE,
+                    incident_key TEXT,
+                    latest_alert_id TEXT,
                     hostname TEXT NOT NULL,
                     detection_name TEXT NOT NULL,
                     risk_score REAL NOT NULL,
@@ -91,9 +96,38 @@ class SQLiteIncidentRepository:
                     FOREIGN KEY(alert_id) REFERENCES alerts(alert_id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS incident_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    alert_id TEXT NOT NULL UNIQUE,
+                    linked_at TEXT NOT NULL,
+                    correlation_outcome TEXT NOT NULL,
+                    correlation_strategy TEXT,
+                    correlation_fingerprint TEXT,
+                    correlation_values_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE CASCADE,
+                    FOREIGN KEY(alert_id) REFERENCES alerts(alert_id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS incident_fingerprints (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    alert_id TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    fingerprint_fields_json TEXT NOT NULL,
+                    values_json TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE CASCADE,
+                    FOREIGN KEY(alert_id) REFERENCES alerts(alert_id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS action_results (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     incident_id INTEGER NOT NULL,
+                    alert_id TEXT,
                     action TEXT NOT NULL,
                     status TEXT NOT NULL,
                     executed_at TEXT NOT NULL,
@@ -138,7 +172,13 @@ class SQLiteIncidentRepository:
                     approval_reason TEXT,
                     approved_by TEXT,
                     approved_at TEXT,
+                    approval_due_at TEXT,
+                    approval_escalates_at TEXT,
+                    escalation_targets_json TEXT,
+                    approval_escalated_at TEXT,
                     approval_comment TEXT,
+                    rollback_requested_by TEXT,
+                    rollback_requested_at TEXT,
                     last_error TEXT,
                     dead_lettered_at TEXT,
                     created_at TEXT NOT NULL,
@@ -166,6 +206,8 @@ class SQLiteIncidentRepository:
                     actor TEXT NOT NULL,
                     message TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
+                    previous_event_hash TEXT,
+                    event_hash TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(incident_id) REFERENCES incidents(id) ON DELETE CASCADE,
                     FOREIGN KEY(alert_id) REFERENCES alerts(alert_id) ON DELETE CASCADE
@@ -183,6 +225,9 @@ class SQLiteIncidentRepository:
             )
             self._ensure_column(conn, "incidents", "case_status", "TEXT NOT NULL DEFAULT 'new'")
             self._ensure_column(conn, "incidents", "case_owner", "TEXT")
+            self._ensure_column(conn, "incidents", "incident_key", "TEXT")
+            self._ensure_column(conn, "incidents", "latest_alert_id", "TEXT")
+            self._ensure_column(conn, "action_results", "alert_id", "TEXT")
             self._ensure_column(conn, "action_results", "correlation_id", "TEXT")
             self._ensure_column(conn, "action_results", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "action_results", "updated_at", "TEXT NOT NULL DEFAULT ''")
@@ -191,23 +236,81 @@ class SQLiteIncidentRepository:
             self._ensure_column(conn, "queue_jobs", "approval_reason", "TEXT")
             self._ensure_column(conn, "queue_jobs", "approved_by", "TEXT")
             self._ensure_column(conn, "queue_jobs", "approved_at", "TEXT")
+            self._ensure_column(conn, "queue_jobs", "approval_due_at", "TEXT")
+            self._ensure_column(conn, "queue_jobs", "approval_escalates_at", "TEXT")
+            self._ensure_column(conn, "queue_jobs", "escalation_targets_json", "TEXT")
+            self._ensure_column(conn, "queue_jobs", "approval_escalated_at", "TEXT")
             self._ensure_column(conn, "queue_jobs", "approval_comment", "TEXT")
+            self._ensure_column(conn, "queue_jobs", "rollback_requested_by", "TEXT")
+            self._ensure_column(conn, "queue_jobs", "rollback_requested_at", "TEXT")
+            self._ensure_column(conn, "audit_events", "previous_event_hash", "TEXT")
+            self._ensure_column(conn, "audit_events", "event_hash", "TEXT")
             conn.execute(
                 "UPDATE action_results SET updated_at = executed_at WHERE updated_at IS NULL OR updated_at = ''"
             )
             conn.execute(
+                """
+                UPDATE action_results
+                SET alert_id = COALESCE(
+                    alert_id,
+                    (
+                        SELECT incidents.alert_id
+                        FROM incidents
+                        WHERE incidents.id = action_results.incident_id
+                    )
+                )
+                WHERE alert_id IS NULL OR alert_id = ''
+                """
+            )
+            conn.execute(
                 "UPDATE incidents SET case_status = 'new' WHERE case_status IS NULL OR case_status = ''"
+            )
+            conn.execute(
+                "UPDATE incidents SET incident_key = COALESCE(incident_key, 'incident-' || alert_id)"
+            )
+            conn.execute(
+                "UPDATE incidents SET latest_alert_id = COALESCE(latest_alert_id, alert_id)"
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO incident_alerts (
+                    incident_id, alert_id, linked_at, correlation_outcome,
+                    correlation_strategy, correlation_fingerprint, correlation_values_json, created_at
+                )
+                SELECT
+                    incidents.id,
+                    incidents.alert_id,
+                    incidents.created_at,
+                    'new_incident',
+                    NULL,
+                    NULL,
+                    '{}',
+                    incidents.created_at
+                FROM incidents
+                """
             )
             conn.executescript(
                 """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_incidents_incident_key
+                ON incidents(incident_key);
+
                 CREATE INDEX IF NOT EXISTS idx_incidents_ticket_id
                 ON incidents(ticket_id);
 
                 CREATE INDEX IF NOT EXISTS idx_incidents_case_status
                 ON incidents(case_status);
 
+                CREATE INDEX IF NOT EXISTS idx_incidents_latest_alert_id
+                ON incidents(latest_alert_id);
+
+                CREATE INDEX IF NOT EXISTS idx_incident_alerts_incident
+                ON incident_alerts(incident_id, linked_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_incident_fingerprints_lookup
+                ON incident_fingerprints(fingerprint, observed_at DESC);
+
                 CREATE INDEX IF NOT EXISTS idx_action_results_incident_action
-                ON action_results(incident_id, action);
+                ON action_results(incident_id, alert_id, action);
 
                 CREATE INDEX IF NOT EXISTS idx_action_results_correlation
                 ON action_results(correlation_id);
@@ -230,13 +333,19 @@ class SQLiteIncidentRepository:
         response = result.response
         timestamp = self._utc_now()
         incident_status = self._derive_incident_status(response.action_results)
+        correlation_trace = response.correlation_trace
+        incident_key = correlation_trace.incident_key or f"incident-{alert.alert_id}"
+        outcome = correlation_trace.outcome.value
+        has_report_artifacts = any(
+            (
+                result.artifacts.markdown_path,
+                result.artifacts.html_path,
+                result.artifacts.pdf_path,
+                result.artifacts.markdown_content,
+            )
+        )
 
         with self._connect() as conn:
-            existing_incident = conn.execute(
-                "SELECT id FROM incidents WHERE alert_id = ?",
-                (alert.alert_id,),
-            ).fetchone()
-
             conn.execute(
                 """
                 INSERT INTO alerts (
@@ -278,74 +387,191 @@ class SQLiteIncidentRepository:
                 ),
             )
 
+            existing_incident = self._resolve_incident_row(
+                conn,
+                alert_id=alert.alert_id,
+                incident_key=incident_key,
+            )
+            stored_ticket_id = response.ticket_id
+            stored_report_path = response.report_path
+            if existing_incident is not None:
+                stored_ticket_id = stored_ticket_id or existing_incident["ticket_id"]
+                if not has_report_artifacts:
+                    stored_report_path = stored_report_path or existing_incident["report_path"]
+            stored_response = response.model_copy(
+                update={
+                    "ticket_id": stored_ticket_id,
+                    "report_path": stored_report_path,
+                }
+            )
+            if existing_incident is None:
+                conn.execute(
+                    """
+                    INSERT INTO incidents (
+                        alert_id, incident_key, latest_alert_id, hostname, detection_name, risk_score, risk_level,
+                        ticket_id, status, completed_at, report_path, case_status,
+                        case_owner, triggered_actions_json, policy_reasoning_json,
+                        enriched_json, response_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        alert.alert_id,
+                        incident_key,
+                        alert.alert_id,
+                        alert.hostname,
+                        alert.detection_name,
+                        enriched.risk_score,
+                        enriched.risk_level,
+                        stored_ticket_id,
+                        incident_status,
+                        response.completed_at.isoformat(),
+                        stored_report_path,
+                        IncidentCaseStatus.NEW.value,
+                        None,
+                        json.dumps([action.value for action in response.triggered_actions], ensure_ascii=False),
+                        json.dumps(response.policy_reasoning, ensure_ascii=False),
+                        self._dump_model(enriched),
+                        self._dump_model(stored_response),
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                incident_row = conn.execute(
+                    "SELECT * FROM incidents WHERE incident_key = ?",
+                    (incident_key,),
+                ).fetchone()
+            else:
+                next_case_status = existing_incident["case_status"] or IncidentCaseStatus.NEW.value
+                if outcome == CorrelationOutcome.REOPENED_INCIDENT.value:
+                    next_case_status = IncidentCaseStatus.IN_PROGRESS.value
+                conn.execute(
+                    """
+                    UPDATE incidents
+                    SET latest_alert_id = ?,
+                        hostname = ?,
+                        detection_name = ?,
+                        risk_score = ?,
+                        risk_level = ?,
+                        ticket_id = ?,
+                        status = ?,
+                        completed_at = ?,
+                        report_path = ?,
+                        case_status = ?,
+                        case_owner = case_owner,
+                        triggered_actions_json = ?,
+                        policy_reasoning_json = ?,
+                        enriched_json = ?,
+                        response_json = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        alert.alert_id,
+                        alert.hostname,
+                        alert.detection_name,
+                        enriched.risk_score,
+                        enriched.risk_level,
+                        stored_ticket_id,
+                        incident_status,
+                        response.completed_at.isoformat(),
+                        stored_report_path,
+                        next_case_status,
+                        json.dumps([action.value for action in response.triggered_actions], ensure_ascii=False),
+                        json.dumps(response.policy_reasoning, ensure_ascii=False),
+                        self._dump_model(enriched),
+                        self._dump_model(stored_response),
+                        timestamp,
+                        int(existing_incident["id"]),
+                    ),
+                )
+                incident_row = conn.execute(
+                    "SELECT * FROM incidents WHERE id = ?",
+                    (int(existing_incident["id"]),),
+                ).fetchone()
+
+            incident_id = int(incident_row["id"])
+
             conn.execute(
                 """
-                INSERT INTO incidents (
-                    alert_id, hostname, detection_name, risk_score, risk_level,
-                    ticket_id, status, completed_at, report_path, case_status,
-                    case_owner, triggered_actions_json, policy_reasoning_json,
-                    enriched_json, response_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO incident_alerts (
+                    incident_id, alert_id, linked_at, correlation_outcome, correlation_strategy,
+                    correlation_fingerprint, correlation_values_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(alert_id) DO UPDATE SET
-                    hostname=excluded.hostname,
-                    detection_name=excluded.detection_name,
-                    risk_score=excluded.risk_score,
-                    risk_level=excluded.risk_level,
-                    ticket_id=excluded.ticket_id,
-                    status=excluded.status,
-                    completed_at=excluded.completed_at,
-                    report_path=excluded.report_path,
-                    case_status=incidents.case_status,
-                    case_owner=incidents.case_owner,
-                    triggered_actions_json=excluded.triggered_actions_json,
-                    policy_reasoning_json=excluded.policy_reasoning_json,
-                    enriched_json=excluded.enriched_json,
-                    response_json=excluded.response_json,
-                    updated_at=excluded.updated_at
+                    incident_id = excluded.incident_id,
+                    linked_at = excluded.linked_at,
+                    correlation_outcome = excluded.correlation_outcome,
+                    correlation_strategy = excluded.correlation_strategy,
+                    correlation_fingerprint = excluded.correlation_fingerprint,
+                    correlation_values_json = excluded.correlation_values_json
                 """,
                 (
+                    incident_id,
                     alert.alert_id,
-                    alert.hostname,
-                    alert.detection_name,
-                    enriched.risk_score,
-                    enriched.risk_level,
-                    response.ticket_id,
-                    incident_status,
-                    response.completed_at.isoformat(),
-                    response.report_path,
-                    IncidentCaseStatus.NEW.value,
-                    None,
-                    json.dumps([action.value for action in response.triggered_actions], ensure_ascii=False),
-                    json.dumps(response.policy_reasoning, ensure_ascii=False),
-                    self._dump_model(enriched),
-                    self._dump_model(response),
-                    timestamp,
+                    alert.received_at.isoformat(),
+                    outcome,
+                    (
+                        response.correlation_trace.evidence[0].strategy
+                        if response.correlation_trace.evidence
+                        else None
+                    ),
+                    (
+                        response.correlation_trace.evidence[0].fingerprint
+                        if response.correlation_trace.evidence
+                        else None
+                    ),
+                    json.dumps(
+                        (
+                            response.correlation_trace.evidence[0].values
+                            if response.correlation_trace.evidence
+                            else {}
+                        ),
+                        ensure_ascii=False,
+                    ),
                     timestamp,
                 ),
             )
 
-            incident_id = int(
-                conn.execute(
-                    "SELECT id FROM incidents WHERE alert_id = ?",
-                    (alert.alert_id,),
-                ).fetchone()["id"]
+            conn.execute(
+                "DELETE FROM incident_fingerprints WHERE alert_id = ?",
+                (alert.alert_id,),
             )
+            for fingerprint in response.correlation_trace.candidate_fingerprints:
+                conn.execute(
+                    """
+                    INSERT INTO incident_fingerprints (
+                        incident_id, alert_id, strategy, fingerprint, fingerprint_fields_json,
+                        values_json, observed_at, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        incident_id,
+                        alert.alert_id,
+                        fingerprint.strategy,
+                        fingerprint.fingerprint,
+                        json.dumps(fingerprint.fields, ensure_ascii=False),
+                        json.dumps(fingerprint.values, ensure_ascii=False),
+                        alert.received_at.isoformat(),
+                        timestamp,
+                    ),
+                )
 
             conn.execute(
-                "DELETE FROM action_results WHERE incident_id = ?",
-                (incident_id,),
+                "DELETE FROM action_results WHERE incident_id = ? AND COALESCE(alert_id, '') = ?",
+                (incident_id, alert.alert_id),
             )
             for action_result in response.action_results:
                 serialized = action_result.model_dump(mode="json")
                 conn.execute(
                     """
                     INSERT INTO action_results (
-                        incident_id, action, status, executed_at, details,
+                        incident_id, alert_id, action, status, executed_at, details,
                         correlation_id, attempt_count, updated_at, raw_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         incident_id,
+                        alert.alert_id,
                         action_result.action.value,
                         serialized["status"],
                         action_result.executed_at.isoformat(),
@@ -358,18 +584,38 @@ class SQLiteIncidentRepository:
                     ),
                 )
 
-            conn.execute(
-                "DELETE FROM reports WHERE incident_id = ?",
-                (incident_id,),
+            final_incident_status = self._derive_incident_status_from_payloads(
+                [
+                    {"status": row["status"]}
+                    for row in conn.execute(
+                        """
+                        SELECT status
+                        FROM action_results
+                        WHERE incident_id = ?
+                        """,
+                        (incident_id,),
+                    ).fetchall()
+                ]
             )
-            if any(
-                (
-                    result.artifacts.markdown_path,
-                    result.artifacts.html_path,
-                    result.artifacts.pdf_path,
-                    result.artifacts.markdown_content,
+            conn.execute(
+                """
+                UPDATE incidents
+                SET status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (final_incident_status, timestamp, incident_id),
+            )
+
+            conn.execute(
+                "UPDATE incidents SET report_path = ? WHERE id = ?",
+                (stored_report_path, incident_id),
+            )
+            if has_report_artifacts:
+                conn.execute(
+                    "DELETE FROM reports WHERE incident_id = ?",
+                    (incident_id,),
                 )
-            ):
                 conn.execute(
                     """
                     INSERT INTO reports (
@@ -393,28 +639,46 @@ class SQLiteIncidentRepository:
                     conn,
                     incident_id=incident_id,
                     alert_id=alert.alert_id,
-                    category="workflow.ingested",
+                    category="correlation.new_incident",
                     actor="soar-workflow",
                     message=(
-                        f"Incident processed for host '{alert.hostname}' with risk "
+                        f"New incident created for host '{alert.hostname}' with risk "
                         f"{enriched.risk_level} ({enriched.risk_score:.1f})."
                     ),
                     payload={
                         "risk_level": enriched.risk_level,
                         "risk_score": enriched.risk_score,
-                        "ticket_id": response.ticket_id,
+                        "ticket_id": stored_ticket_id,
+                        "incident_key": incident_key,
                     },
                 )
-                for action_result in response.action_results:
-                    self._append_audit_event(
-                        conn,
-                        incident_id=incident_id,
-                        alert_id=alert.alert_id,
-                        category=f"action.{self._normalize_action_status(action_result.status)}",
-                        actor="policy-engine",
-                        message=f"Action '{action_result.action.value}' recorded as '{action_result.status}'.",
-                        payload=action_result.model_dump(mode="json"),
-                    )
+            elif outcome in {
+                CorrelationOutcome.ATTACHED_TO_EXISTING.value,
+                CorrelationOutcome.REOPENED_INCIDENT.value,
+            }:
+                self._append_audit_event(
+                    conn,
+                    incident_id=incident_id,
+                    alert_id=alert.alert_id,
+                    category=f"correlation.{outcome}",
+                    actor="soar-workflow",
+                    message=(
+                        f"Alert '{alert.alert_id}' correlated into incident '{incident_key}' "
+                        f"using window {response.correlation_trace.window}."
+                    ),
+                    payload=response.correlation_trace.model_dump(mode="json"),
+                )
+
+            for action_result in response.action_results:
+                self._append_audit_event(
+                    conn,
+                    incident_id=incident_id,
+                    alert_id=alert.alert_id,
+                    category=f"action.{self._normalize_action_status(action_result.status)}",
+                    actor="policy-engine",
+                    message=f"Action '{action_result.action.value}' recorded as '{action_result.status}'.",
+                    payload=action_result.model_dump(mode="json"),
+                )
 
             conn.commit()
 
@@ -447,8 +711,10 @@ class SQLiteIncidentRepository:
                     request_json, payload_json, status, available_at, locked_at,
                     worker_id, attempt_count, max_attempts, requires_approval,
                     approval_state, approval_reason, approved_by, approved_at,
-                    approval_comment, last_error, dead_lettered_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                    approval_due_at, approval_escalates_at, escalation_targets_json,
+                    approval_escalated_at, approval_comment, rollback_requested_by,
+                    rollback_requested_at, last_error, dead_lettered_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
                 """,
                 (
                     alert_id,
@@ -466,16 +732,19 @@ class SQLiteIncidentRepository:
                     request.approval_reason,
                     request.approved_by,
                     request.approved_at.isoformat() if request.approved_at else None,
-                    None,
+                    request.approval_due_at.isoformat() if request.approval_due_at else None,
+                    request.approval_escalates_at.isoformat() if request.approval_escalates_at else None,
+                    json.dumps(list(request.escalation_targets), ensure_ascii=False),
+                    request.approval_escalated_at.isoformat() if request.approval_escalated_at else None,
+                    request.approval_comment,
+                    request.rollback_requested_by,
+                    request.rollback_requested_at.isoformat() if request.rollback_requested_at else None,
                     timestamp,
                     timestamp,
                 ),
             )
 
-            incident_row = conn.execute(
-                "SELECT id FROM incidents WHERE alert_id = ?",
-                (alert_id,),
-            ).fetchone()
+            incident_row = self._resolve_incident_row(conn, alert_id=alert_id)
             if incident_row is not None:
                 category = "approval.waiting" if queue_status == "waiting_approval" else "queue.enqueued"
                 message = (
@@ -555,15 +824,7 @@ class SQLiteIncidentRepository:
                 "SELECT * FROM queue_jobs WHERE id = ?",
                 (row["id"],),
             ).fetchone()
-            request = QueuedActionRequest.model_validate(json.loads(row["request_json"])).model_copy(
-                update={
-                    "requires_approval": bool(row["requires_approval"]),
-                    "approval_state": row["approval_state"],
-                    "approval_reason": row["approval_reason"],
-                    "approved_by": row["approved_by"],
-                    "approved_at": self._parse_datetime(row["approved_at"]),
-                }
-            )
+            request = self._queue_request_from_row(row)
             running_result = ActionResult(
                 action=ResponseAction(request.action),
                 status="running",
@@ -578,8 +839,15 @@ class SQLiteIncidentRepository:
                 requires_approval=bool(row["requires_approval"]),
                 approval_state=row["approval_state"],
                 approval_reason=row["approval_reason"],
+                approval_comment=row["approval_comment"],
                 approved_by=row["approved_by"],
                 approved_at=self._parse_datetime(row["approved_at"]),
+                approval_due_at=self._parse_datetime(row["approval_due_at"]),
+                approval_escalates_at=self._parse_datetime(row["approval_escalates_at"]),
+                escalation_targets=self._parse_string_list(row["escalation_targets_json"]),
+                approval_escalated_at=self._parse_datetime(row["approval_escalated_at"]),
+                rollback_requested_by=row["rollback_requested_by"],
+                rollback_requested_at=self._parse_datetime(row["rollback_requested_at"]),
                 operator=worker_id,
             )
             self._upsert_action_result_for_alert(conn, row["alert_id"], running_result)
@@ -777,9 +1045,10 @@ class SQLiteIncidentRepository:
                     correlation_id,
                 ),
             )
-            updated_request = QueuedActionRequest.model_validate(json.loads(row["request_json"])).model_copy(
+            updated_request = self._queue_request_from_row(row).model_copy(
                 update={
                     "approval_state": ActionApprovalState.APPROVED,
+                    "approval_comment": comment,
                     "approved_by": actor,
                     "approved_at": decision_time,
                 }
@@ -799,8 +1068,15 @@ class SQLiteIncidentRepository:
                 requires_approval=bool(row["requires_approval"]),
                 approval_state=ActionApprovalState.APPROVED,
                 approval_reason=row["approval_reason"],
+                approval_comment=comment,
                 approved_by=actor,
                 approved_at=decision_time,
+                approval_due_at=self._parse_datetime(row["approval_due_at"]),
+                approval_escalates_at=self._parse_datetime(row["approval_escalates_at"]),
+                escalation_targets=self._parse_string_list(row["escalation_targets_json"]),
+                approval_escalated_at=self._parse_datetime(row["approval_escalated_at"]),
+                rollback_requested_by=row["rollback_requested_by"],
+                rollback_requested_at=self._parse_datetime(row["rollback_requested_at"]),
                 operator=actor,
             )
             self._upsert_action_result_for_alert(conn, alert_id, approved_result)
@@ -861,9 +1137,10 @@ class SQLiteIncidentRepository:
                     correlation_id,
                 ),
             )
-            updated_request = QueuedActionRequest.model_validate(json.loads(row["request_json"])).model_copy(
+            updated_request = self._queue_request_from_row(row).model_copy(
                 update={
                     "approval_state": ActionApprovalState.REJECTED,
+                    "approval_comment": comment,
                     "approved_by": actor,
                     "approved_at": decision_time,
                 }
@@ -883,8 +1160,15 @@ class SQLiteIncidentRepository:
                 requires_approval=bool(row["requires_approval"]),
                 approval_state=ActionApprovalState.REJECTED,
                 approval_reason=row["approval_reason"],
+                approval_comment=comment,
                 approved_by=actor,
                 approved_at=decision_time,
+                approval_due_at=self._parse_datetime(row["approval_due_at"]),
+                approval_escalates_at=self._parse_datetime(row["approval_escalates_at"]),
+                escalation_targets=self._parse_string_list(row["escalation_targets_json"]),
+                approval_escalated_at=self._parse_datetime(row["approval_escalated_at"]),
+                rollback_requested_by=row["rollback_requested_by"],
+                rollback_requested_at=self._parse_datetime(row["rollback_requested_at"]),
                 operator=actor,
             )
             self._upsert_action_result_for_alert(conn, alert_id, rejected_result)
@@ -899,6 +1183,242 @@ class SQLiteIncidentRepository:
             conn.commit()
         return self.get_incident_by_alert_id(alert_id)
 
+    def rollback_action_job(
+        self,
+        alert_id: str,
+        correlation_id: str,
+        *,
+        actor: str,
+        comment: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        decision_time = utc_now()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM queue_jobs
+                WHERE alert_id = ? AND correlation_id = ?
+                """,
+                (alert_id, correlation_id),
+            ).fetchone()
+            if row is None:
+                return None
+
+            current_status = str(row["status"] or "")
+            if current_status not in {"queued", "waiting_approval", "retry_pending"}:
+                raise ValueError(
+                    "Queued action "
+                    f"{row['correlation_id']} cannot be rolled back from status '{current_status}'."
+                )
+
+            next_approval_state = (
+                ActionApprovalState.REJECTED
+                if current_status == "waiting_approval" and bool(row["requires_approval"])
+                else self._parse_approval_state(row["approval_state"])
+            )
+            next_comment = comment if comment is not None else row["approval_comment"]
+
+            conn.execute(
+                """
+                UPDATE queue_jobs
+                SET status = 'cancelled',
+                    approval_state = ?,
+                    approval_comment = ?,
+                    rollback_requested_by = ?,
+                    rollback_requested_at = ?,
+                    updated_at = ?
+                WHERE correlation_id = ?
+                """,
+                (
+                    next_approval_state.value,
+                    next_comment,
+                    actor,
+                    decision_time.isoformat(),
+                    self._utc_now(),
+                    correlation_id,
+                ),
+            )
+            updated_request = self._queue_request_from_row(row).model_copy(
+                update={
+                    "approval_state": next_approval_state,
+                    "approval_comment": next_comment,
+                    "rollback_requested_by": actor,
+                    "rollback_requested_at": decision_time,
+                }
+            )
+            conn.execute(
+                "UPDATE queue_jobs SET request_json = ? WHERE correlation_id = ?",
+                (self._dump_model(updated_request), correlation_id),
+            )
+            rollback_result = ActionResult(
+                action=ResponseAction(str(row["action"])),
+                status="skipped",
+                executed_at=decision_time,
+                details=comment or f"Action '{row['action']}' was cancelled before execution.",
+                correlation_id=correlation_id,
+                attempt_count=int(row["attempt_count"] or 0),
+                updated_at=decision_time,
+                requires_approval=bool(row["requires_approval"]),
+                approval_state=next_approval_state,
+                approval_reason=row["approval_reason"],
+                approval_comment=next_comment,
+                approved_by=row["approved_by"],
+                approved_at=self._parse_datetime(row["approved_at"]),
+                approval_due_at=self._parse_datetime(row["approval_due_at"]),
+                approval_escalates_at=self._parse_datetime(row["approval_escalates_at"]),
+                escalation_targets=self._parse_string_list(row["escalation_targets_json"]),
+                approval_escalated_at=self._parse_datetime(row["approval_escalated_at"]),
+                rollback_requested_by=actor,
+                rollback_requested_at=decision_time,
+                operator=actor,
+            )
+            self._upsert_action_result_for_alert(conn, alert_id, rollback_result)
+            self._append_queue_audit_event(
+                conn,
+                row=row,
+                category="queue.cancelled",
+                actor=actor,
+                message=f"Action '{row['action']}' cancelled before execution.",
+                payload={**rollback_result.model_dump(mode="json"), "comment": comment},
+            )
+            conn.commit()
+        return self.get_incident_by_alert_id(alert_id)
+
+    def reopen_incident(
+        self,
+        alert_id: str,
+        *,
+        actor: str,
+        comment: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = self._resolve_incident_row(conn, alert_id=alert_id)
+            if row is None:
+                return None
+
+            current_case_status = str(row["case_status"] or IncidentCaseStatus.NEW.value)
+            if current_case_status not in {IncidentCaseStatus.RESOLVED.value, IncidentCaseStatus.CLOSED.value}:
+                raise ValueError(
+                    f"Incident '{alert_id}' cannot be reopened from case status '{current_case_status}'."
+                )
+
+            timestamp = self._utc_now()
+            next_case_status = IncidentCaseStatus.IN_PROGRESS.value
+            conn.execute(
+                """
+                UPDATE incidents
+                SET case_status = ?,
+                    status = CASE WHEN status = 'completed' THEN 'attention' ELSE status END,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (next_case_status, timestamp, int(row["id"])),
+            )
+            self._append_audit_event(
+                conn,
+                incident_id=int(row["id"]),
+                alert_id=alert_id,
+                category="case.reopened",
+                actor=actor,
+                message=comment or "Incident reopened for analyst follow-up.",
+                payload={
+                    "previous_case_status": current_case_status,
+                    "case_status": next_case_status,
+                    "case_owner": row["case_owner"],
+                    "comment": comment,
+                },
+            )
+            conn.commit()
+        return self.get_incident_by_alert_id(alert_id)
+
+    def escalate_overdue_approvals(
+        self,
+        *,
+        actor: str,
+    ) -> list[dict[str, Any]]:
+        escalation_time = utc_now()
+        escalation_time_iso = escalation_time.isoformat()
+        affected_alert_ids: list[str] = []
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM queue_jobs
+                WHERE status = 'waiting_approval'
+                  AND approval_escalates_at IS NOT NULL
+                  AND approval_escalates_at <= ?
+                  AND approval_escalated_at IS NULL
+                ORDER BY approval_escalates_at ASC, id ASC
+                """,
+                (escalation_time_iso,),
+            ).fetchall()
+
+            for row in rows:
+                escalation_targets = self._parse_string_list(row["escalation_targets_json"])
+                conn.execute(
+                    """
+                    UPDATE queue_jobs
+                    SET approval_escalated_at = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (escalation_time_iso, self._utc_now(), int(row["id"])),
+                )
+                updated_request = self._queue_request_from_row(row).model_copy(
+                    update={"approval_escalated_at": escalation_time}
+                )
+                conn.execute(
+                    "UPDATE queue_jobs SET request_json = ? WHERE correlation_id = ?",
+                    (self._dump_model(updated_request), row["correlation_id"]),
+                )
+                escalated_result = ActionResult(
+                    action=ResponseAction(str(row["action"])),
+                    status="waiting_approval",
+                    executed_at=self._parse_datetime(row["created_at"]) or escalation_time,
+                    details=(
+                        f"Approval SLA breached for '{row['action']}'. "
+                        f"Escalated to {', '.join(escalation_targets) if escalation_targets else 'configured escalation path'}."
+                    ),
+                    correlation_id=row["correlation_id"],
+                    attempt_count=int(row["attempt_count"] or 0),
+                    updated_at=escalation_time,
+                    requires_approval=bool(row["requires_approval"]),
+                    approval_state=row["approval_state"],
+                    approval_reason=row["approval_reason"],
+                    approval_comment=row["approval_comment"],
+                    approved_by=row["approved_by"],
+                    approved_at=self._parse_datetime(row["approved_at"]),
+                    approval_due_at=self._parse_datetime(row["approval_due_at"]),
+                    approval_escalates_at=self._parse_datetime(row["approval_escalates_at"]),
+                    escalation_targets=escalation_targets,
+                    approval_escalated_at=escalation_time,
+                    rollback_requested_by=row["rollback_requested_by"],
+                    rollback_requested_at=self._parse_datetime(row["rollback_requested_at"]),
+                    operator=actor,
+                )
+                self._upsert_action_result_for_alert(conn, row["alert_id"], escalated_result)
+                self._append_queue_audit_event(
+                    conn,
+                    row=row,
+                    category="approval.escalated",
+                    actor=actor,
+                    message=f"Approval for '{row['action']}' exceeded SLA and was escalated.",
+                    payload={
+                        **escalated_result.model_dump(mode="json"),
+                        "escalation_targets": escalation_targets,
+                    },
+                )
+                if row["alert_id"] not in affected_alert_ids:
+                    affected_alert_ids.append(str(row["alert_id"]))
+            conn.commit()
+
+        return [
+            incident
+            for affected_alert_id in affected_alert_ids
+            if (incident := self.get_incident_by_alert_id(affected_alert_id)) is not None
+        ]
+
     def update_incident_case(
         self,
         alert_id: str,
@@ -909,10 +1429,7 @@ class SQLiteIncidentRepository:
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT id, case_status, case_owner FROM incidents WHERE alert_id = ?",
-                (alert_id,),
-            ).fetchone()
+            row = self._resolve_incident_row(conn, alert_id=alert_id)
             if row is None:
                 return None
 
@@ -925,9 +1442,9 @@ class SQLiteIncidentRepository:
                 SET case_status = ?,
                     case_owner = ?,
                     updated_at = ?
-                WHERE alert_id = ?
+                WHERE id = ?
                 """,
-                (next_status, next_owner, timestamp, alert_id),
+                (next_status, next_owner, timestamp, int(row["id"])),
             )
             self._append_audit_event(
                 conn,
@@ -954,10 +1471,7 @@ class SQLiteIncidentRepository:
     ) -> Optional[dict[str, Any]]:
         note = IncidentNote(author=author, body=body)
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT id FROM incidents WHERE alert_id = ?",
-                (alert_id,),
-            ).fetchone()
+            row = self._resolve_incident_row(conn, alert_id=alert_id)
             if row is None:
                 return None
 
@@ -1001,10 +1515,7 @@ class SQLiteIncidentRepository:
         updated_alert_ids: list[str] = []
         with self._connect() as conn:
             for alert_id in alert_ids:
-                row = conn.execute(
-                    "SELECT id, case_status, case_owner FROM incidents WHERE alert_id = ?",
-                    (alert_id,),
-                ).fetchone()
+                row = self._resolve_incident_row(conn, alert_id=alert_id)
                 if row is None:
                     continue
                 next_status = case_status or row["case_status"] or IncidentCaseStatus.NEW.value
@@ -1015,9 +1526,9 @@ class SQLiteIncidentRepository:
                     SET case_status = ?,
                         case_owner = ?,
                         updated_at = ?
-                    WHERE alert_id = ?
+                    WHERE id = ?
                     """,
-                    (next_status, next_owner, self._utc_now(), alert_id),
+                    (next_status, next_owner, self._utc_now(), int(row["id"])),
                 )
                 self._append_audit_event(
                     conn,
@@ -1088,6 +1599,7 @@ class SQLiteIncidentRepository:
         return [self._deserialize_saved_filter(dict(row)) for row in rows]
 
     def get_queue_metrics(self) -> dict[str, Any]:
+        timestamp = self._utc_now()
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -1099,16 +1611,121 @@ class SQLiteIncidentRepository:
                     SUM(CASE WHEN status = 'retry_pending' THEN 1 ELSE 0 END) AS retry_pending_jobs,
                     SUM(CASE WHEN status = 'dead_letter' THEN 1 ELSE 0 END) AS dead_letter_jobs,
                     SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_jobs,
+                    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_jobs,
+                    SUM(
+                        CASE
+                            WHEN status = 'waiting_approval'
+                             AND approval_due_at IS NOT NULL
+                             AND approval_due_at <= ?
+                            THEN 1
+                            ELSE 0
+                        END
+                    ) AS overdue_approval_jobs,
+                    SUM(
+                        CASE
+                            WHEN status = 'waiting_approval'
+                             AND approval_escalates_at IS NOT NULL
+                             AND approval_escalates_at <= ?
+                             AND approval_escalated_at IS NULL
+                            THEN 1
+                            ELSE 0
+                        END
+                    ) AS escalation_due_jobs,
+                    SUM(
+                        CASE
+                            WHEN status = 'waiting_approval'
+                             AND approval_escalated_at IS NOT NULL
+                            THEN 1
+                            ELSE 0
+                        END
+                    ) AS escalated_approval_jobs,
                     MAX(updated_at) AS last_job_update_at
                 FROM queue_jobs
                 """
+                ,
+                (timestamp, timestamp),
             ).fetchone()
         return dict(row)
 
+    def find_correlated_incident(
+        self,
+        fingerprints: list["CorrelationFingerprint"],
+        *,
+        observed_at: datetime,
+        window: timedelta,
+    ) -> Optional[dict[str, Any]]:
+        if not fingerprints:
+            return None
+
+        window_start = observed_at - window
+        window_start_iso = window_start.isoformat()
+        observed_at_iso = observed_at.isoformat()
+
+        with self._connect() as conn:
+            for fingerprint in fingerprints:
+                row = conn.execute(
+                    """
+                    SELECT
+                        incidents.id AS incident_id,
+                        incidents.incident_key,
+                        incidents.case_status,
+                        incident_fingerprints.strategy,
+                        incident_fingerprints.fingerprint,
+                        incident_fingerprints.values_json
+                    FROM incident_fingerprints
+                    JOIN incidents ON incidents.id = incident_fingerprints.incident_id
+                    WHERE incident_fingerprints.fingerprint = ?
+                      AND incident_fingerprints.observed_at BETWEEN ? AND ?
+                    ORDER BY incident_fingerprints.observed_at DESC, incident_fingerprints.id DESC
+                    LIMIT 1
+                    """,
+                    (
+                        fingerprint.fingerprint,
+                        window_start_iso,
+                        observed_at_iso,
+                    ),
+                ).fetchone()
+                if row is None:
+                    continue
+
+                incident_id = int(row["incident_id"])
+                related_alert_ids = self._collect_related_alert_ids(conn, incident_id)
+                matched_alert_ids = [
+                    matched_row["alert_id"]
+                    for matched_row in conn.execute(
+                        """
+                        SELECT DISTINCT alert_id, observed_at, id
+                        FROM incident_fingerprints
+                        WHERE incident_id = ?
+                          AND fingerprint = ?
+                          AND observed_at BETWEEN ? AND ?
+                        ORDER BY observed_at ASC, id ASC
+                        """,
+                        (
+                            incident_id,
+                            row["fingerprint"],
+                            window_start_iso,
+                            observed_at_iso,
+                        ),
+                    ).fetchall()
+                ]
+                return {
+                    "incident_id": incident_id,
+                    "incident_key": row["incident_key"] or f"incident-{related_alert_ids[0]}",
+                    "case_status": row["case_status"],
+                    "related_alert_ids": related_alert_ids,
+                    "matched_alert_ids": matched_alert_ids,
+                    "strategy": row["strategy"],
+                    "fingerprint": row["fingerprint"],
+                    "values": json.loads(row["values_json"]),
+                }
+
+        return None
+
     def get_incident_by_alert_id(self, alert_id: str) -> Optional[dict[str, Any]]:
         return self._get_incident(
-            "WHERE incidents.alert_id = ?",
-            (alert_id,),
+            "WHERE (incident_lookup.alert_id = ? OR incidents.alert_id = ? OR incidents.latest_alert_id = ?)",
+            (alert_id, alert_id, alert_id),
         )
 
     def get_incident_by_ticket_id(self, ticket_id: str) -> Optional[dict[str, Any]]:
@@ -1128,6 +1745,8 @@ class SQLiteIncidentRepository:
                 SELECT
                     incidents.id,
                     incidents.alert_id,
+                    incidents.incident_key,
+                    COALESCE(incidents.latest_alert_id, incidents.alert_id) AS latest_alert_id,
                     incidents.hostname,
                     incidents.detection_name,
                     incidents.risk_score,
@@ -1150,9 +1769,11 @@ class SQLiteIncidentRepository:
                     reports.pdf_path,
                     reports.markdown_content
                 FROM incidents
-                JOIN alerts ON alerts.alert_id = incidents.alert_id
+                JOIN alerts ON alerts.alert_id = COALESCE(incidents.latest_alert_id, incidents.alert_id)
+                LEFT JOIN incident_alerts AS incident_lookup ON incident_lookup.incident_id = incidents.id
                 LEFT JOIN reports ON reports.incident_id = incidents.id
                 {where_clause}
+                GROUP BY incidents.id
                 ORDER BY incidents.id DESC
                 LIMIT 1
                 """,
@@ -1210,6 +1831,8 @@ class SQLiteIncidentRepository:
                 SELECT
                     incidents.id,
                     incidents.alert_id,
+                    incidents.incident_key,
+                    COALESCE(incidents.latest_alert_id, incidents.alert_id) AS latest_alert_id,
                     incidents.hostname,
                     incidents.detection_name,
                     incidents.risk_score,
@@ -1226,7 +1849,8 @@ class SQLiteIncidentRepository:
                     COALESCE(action_summary.failed_action_count, 0) AS failed_action_count,
                     COALESCE(action_summary.succeeded_action_count, 0) AS succeeded_action_count,
                     COALESCE(action_summary.active_action_count, 0) AS active_action_count,
-                    COALESCE(note_summary.note_count, 0) AS note_count
+                    COALESCE(note_summary.note_count, 0) AS note_count,
+                    COALESCE(alert_summary.related_alert_count, 1) AS related_alert_count
                 FROM incidents
                 LEFT JOIN (
                     SELECT
@@ -1245,6 +1869,11 @@ class SQLiteIncidentRepository:
                     FROM case_notes
                     GROUP BY incident_id
                 ) AS note_summary ON note_summary.incident_id = incidents.id
+                LEFT JOIN (
+                    SELECT incident_id, COUNT(*) AS related_alert_count
+                    FROM incident_alerts
+                    GROUP BY incident_id
+                ) AS alert_summary ON alert_summary.incident_id = incidents.id
                 {where_sql}
                 ORDER BY incidents.updated_at DESC, incidents.id DESC
                 LIMIT ?
@@ -1279,11 +1908,16 @@ class SQLiteIncidentRepository:
         row: sqlite3.Row,
     ) -> dict[str, Any]:
         result = dict(row)
+        result["latest_alert_id"] = result.get("latest_alert_id") or result["alert_id"]
         result["triggered_actions"] = json.loads(result.pop("triggered_actions_json"))
         result["policy_reasoning"] = json.loads(result.pop("policy_reasoning_json"))
         result["alert"] = json.loads(result.pop("alert_json"))
         result["enriched_alert"] = json.loads(result.pop("enriched_json"))
         result["response"] = json.loads(result.pop("response_json"))
+        result["related_alert_ids"] = self._collect_related_alert_ids(conn, int(result["id"]))
+        if not result["related_alert_ids"]:
+            result["related_alert_ids"] = [result["alert_id"]]
+        result["related_alert_count"] = len(result["related_alert_ids"])
         result["action_results"] = [
             json.loads(action_row["raw_json"])
             for action_row in conn.execute(
@@ -1321,7 +1955,7 @@ class SQLiteIncidentRepository:
             }
             for event_row in conn.execute(
                 """
-                SELECT event_id, category, actor, message, payload_json, created_at
+                SELECT event_id, category, actor, message, payload_json, previous_event_hash, event_hash, created_at
                 FROM audit_events
                 WHERE incident_id = ?
                 ORDER BY created_at DESC
@@ -1366,10 +2000,7 @@ class SQLiteIncidentRepository:
         alert_id: str,
         action_result: ActionResult,
     ) -> None:
-        incident_row = conn.execute(
-            "SELECT id, response_json FROM incidents WHERE alert_id = ?",
-            (alert_id,),
-        ).fetchone()
+        incident_row = self._resolve_incident_row(conn, alert_id=alert_id)
         if incident_row is None:
             return
 
@@ -1381,34 +2012,39 @@ class SQLiteIncidentRepository:
                 """
                 SELECT id
                 FROM action_results
-                WHERE incident_id = ? AND correlation_id = ?
+                WHERE incident_id = ?
+                  AND COALESCE(alert_id, '') = ?
+                  AND correlation_id = ?
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (incident_row["id"], action_result.correlation_id),
+                (incident_row["id"], alert_id, action_result.correlation_id),
             ).fetchone()
         if existing is None:
             existing = conn.execute(
                 """
                 SELECT id
                 FROM action_results
-                WHERE incident_id = ? AND action = ?
+                WHERE incident_id = ?
+                  AND COALESCE(alert_id, '') = ?
+                  AND action = ?
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (incident_row["id"], action_result.action.value),
+                (incident_row["id"], alert_id, action_result.action.value),
             ).fetchone()
 
         if existing is None:
             conn.execute(
                 """
                 INSERT INTO action_results (
-                    incident_id, action, status, executed_at, details,
+                    incident_id, alert_id, action, status, executed_at, details,
                     correlation_id, attempt_count, updated_at, raw_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     incident_row["id"],
+                    alert_id,
                     action_result.action.value,
                     serialized["status"],
                     action_result.executed_at.isoformat(),
@@ -1424,7 +2060,8 @@ class SQLiteIncidentRepository:
             conn.execute(
                 """
                 UPDATE action_results
-                SET status = ?,
+                SET alert_id = ?,
+                    status = ?,
                     executed_at = ?,
                     details = ?,
                     correlation_id = ?,
@@ -1434,6 +2071,7 @@ class SQLiteIncidentRepository:
                 WHERE id = ?
                 """,
                 (
+                    alert_id,
                     serialized["status"],
                     action_result.executed_at.isoformat(),
                     action_result.details,
@@ -1445,42 +2083,57 @@ class SQLiteIncidentRepository:
                 ),
             )
 
-        response_payload = json.loads(incident_row["response_json"])
-        action_results_payload = list(response_payload.get("action_results") or [])
-        serialized_payload = dict(serialized)
-        match_index = None
-        for index, current in enumerate(action_results_payload):
-            current_correlation_id = current.get("correlation_id")
-            if action_result.correlation_id and current_correlation_id == action_result.correlation_id:
-                match_index = index
-                break
-            if (
-                not action_result.correlation_id
-                and not current_correlation_id
-                and current.get("action") == action_result.action.value
-            ):
-                match_index = index
-                break
-        if match_index is None:
-            action_results_payload.append(serialized_payload)
-        else:
-            action_results_payload[match_index] = serialized_payload
-        response_payload["action_results"] = action_results_payload
+        incident_status = self._derive_incident_status_from_payloads(
+            [
+                {"status": row["status"]}
+                for row in conn.execute(
+                    """
+                    SELECT status
+                    FROM action_results
+                    WHERE incident_id = ?
+                    """,
+                    (incident_row["id"],),
+                ).fetchall()
+            ]
+        )
+        response_json = incident_row["response_json"]
+        if str(incident_row["latest_alert_id"] or incident_row["alert_id"]) == alert_id:
+            response_payload = json.loads(response_json)
+            action_results_payload = list(response_payload.get("action_results") or [])
+            serialized_payload = dict(serialized)
+            match_index = None
+            for index, current in enumerate(action_results_payload):
+                current_correlation_id = current.get("correlation_id")
+                if action_result.correlation_id and current_correlation_id == action_result.correlation_id:
+                    match_index = index
+                    break
+                if (
+                    not action_result.correlation_id
+                    and not current_correlation_id
+                    and current.get("action") == action_result.action.value
+                ):
+                    match_index = index
+                    break
+            if match_index is None:
+                action_results_payload.append(serialized_payload)
+            else:
+                action_results_payload[match_index] = serialized_payload
+            response_payload["action_results"] = action_results_payload
+            response_json = json.dumps(response_payload, ensure_ascii=False)
 
-        incident_status = self._derive_incident_status_from_payloads(action_results_payload)
         conn.execute(
             """
             UPDATE incidents
             SET status = ?,
                 response_json = ?,
                 updated_at = ?
-            WHERE alert_id = ?
+            WHERE id = ?
             """,
             (
                 incident_status,
-                json.dumps(response_payload, ensure_ascii=False),
+                response_json,
                 timestamp,
-                alert_id,
+                int(incident_row["id"]),
             ),
         )
 
@@ -1494,10 +2147,7 @@ class SQLiteIncidentRepository:
         message: str,
         payload: dict[str, Any],
     ) -> None:
-        incident_row = conn.execute(
-            "SELECT id FROM incidents WHERE alert_id = ?",
-            (row["alert_id"],),
-        ).fetchone()
+        incident_row = self._resolve_incident_row(conn, alert_id=row["alert_id"])
         if incident_row is None:
             return
         self._append_audit_event(
@@ -1521,18 +2171,30 @@ class SQLiteIncidentRepository:
         message: str,
         payload: dict[str, Any],
     ) -> None:
+        previous_event_hash = self._get_previous_audit_hash(conn, incident_id)
         event = IncidentAuditEvent(
             event_id=f"audit-{uuid4().hex}",
             category=category,
             actor=actor,
             message=message,
             payload=payload,
+            previous_event_hash=previous_event_hash,
+        )
+        event = event.model_copy(
+            update={
+                "event_hash": self._build_audit_event_hash(
+                    event,
+                    alert_id=alert_id,
+                    incident_id=incident_id,
+                )
+            }
         )
         conn.execute(
             """
             INSERT INTO audit_events (
-                event_id, incident_id, alert_id, category, actor, message, payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                event_id, incident_id, alert_id, category, actor, message, payload_json,
+                previous_event_hash, event_hash, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event.event_id,
@@ -1542,6 +2204,8 @@ class SQLiteIncidentRepository:
                 event.actor,
                 event.message,
                 json.dumps(event.payload, ensure_ascii=False),
+                event.previous_event_hash,
+                event.event_hash,
                 event.created_at.isoformat(),
             ),
         )
@@ -1636,6 +2300,31 @@ class SQLiteIncidentRepository:
         return None
 
     @staticmethod
+    def _parse_approval_state(value: Any) -> ActionApprovalState:
+        if isinstance(value, ActionApprovalState):
+            return value
+        candidate = str(value or ActionApprovalState.NOT_REQUIRED.value).strip().lower()
+        return ActionApprovalState(candidate)
+
+    @staticmethod
+    def _parse_string_list(value: Any) -> list[str]:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            try:
+                loaded = json.loads(stripped)
+            except json.JSONDecodeError:
+                return [stripped]
+        elif isinstance(value, list):
+            loaded = value
+        else:
+            return []
+        if not isinstance(loaded, list):
+            return []
+        return [str(item) for item in loaded if str(item).strip()]
+
+    @staticmethod
     def _utc_now() -> str:
         return datetime.now(UTC).isoformat()
 
@@ -1665,6 +2354,122 @@ class SQLiteIncidentRepository:
             "updated_at": row["updated_at"],
         }
 
+    def _resolve_incident_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        incident_id: Optional[int] = None,
+        alert_id: Optional[str] = None,
+        incident_key: Optional[str] = None,
+        ticket_id: Optional[str] = None,
+    ) -> Optional[sqlite3.Row]:
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if incident_id is not None:
+            conditions.append("incidents.id = ?")
+            params.append(int(incident_id))
+        if incident_key:
+            conditions.append("incidents.incident_key = ?")
+            params.append(incident_key)
+        if ticket_id:
+            conditions.append("incidents.ticket_id = ?")
+            params.append(ticket_id)
+        if alert_id:
+            conditions.append(
+                "(incidents.alert_id = ? OR incidents.latest_alert_id = ? OR incident_lookup.alert_id = ?)"
+            )
+            params.extend((alert_id, alert_id, alert_id))
+
+        if not conditions:
+            raise ValueError("At least one incident lookup selector is required.")
+
+        return conn.execute(
+            f"""
+            SELECT incidents.*
+            FROM incidents
+            LEFT JOIN incident_alerts AS incident_lookup ON incident_lookup.incident_id = incidents.id
+            WHERE {' OR '.join(conditions)}
+            GROUP BY incidents.id
+            ORDER BY incidents.updated_at DESC, incidents.id DESC
+            LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone()
+
+    def _collect_related_alert_ids(
+        self,
+        conn: sqlite3.Connection,
+        incident_id: int,
+    ) -> list[str]:
+        rows = conn.execute(
+            """
+            SELECT alert_id
+            FROM incident_alerts
+            WHERE incident_id = ?
+            ORDER BY linked_at ASC, id ASC
+            """,
+            (incident_id,),
+        ).fetchall()
+        return [row["alert_id"] for row in rows]
+
+    def _queue_request_from_row(self, row: sqlite3.Row) -> QueuedActionRequest:
+        request = QueuedActionRequest.model_validate(json.loads(row["request_json"]))
+        return request.model_copy(
+            update={
+                "requires_approval": bool(row["requires_approval"]),
+                "approval_state": self._parse_approval_state(row["approval_state"]),
+                "approval_reason": row["approval_reason"],
+                "approval_comment": row["approval_comment"],
+                "approved_by": row["approved_by"],
+                "approved_at": self._parse_datetime(row["approved_at"]),
+                "approval_due_at": self._parse_datetime(row["approval_due_at"]),
+                "approval_escalates_at": self._parse_datetime(row["approval_escalates_at"]),
+                "escalation_targets": self._parse_string_list(row["escalation_targets_json"]),
+                "approval_escalated_at": self._parse_datetime(row["approval_escalated_at"]),
+                "rollback_requested_by": row["rollback_requested_by"],
+                "rollback_requested_at": self._parse_datetime(row["rollback_requested_at"]),
+            }
+        )
+
+    def _get_previous_audit_hash(self, conn: sqlite3.Connection, incident_id: int) -> Optional[str]:
+        row = conn.execute(
+            """
+            SELECT event_hash
+            FROM audit_events
+            WHERE incident_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (incident_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return row["event_hash"]
+
+    @staticmethod
+    def _build_audit_event_hash(
+        event: IncidentAuditEvent,
+        *,
+        alert_id: str,
+        incident_id: int,
+    ) -> str:
+        payload = {
+            "event_id": event.event_id,
+            "alert_id": alert_id,
+            "incident_id": incident_id,
+            "category": event.category,
+            "actor": event.actor,
+            "message": event.message,
+            "payload": event.payload,
+            "previous_event_hash": event.previous_event_hash,
+            "created_at": event.created_at.isoformat(),
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        return digest.hexdigest()
+
     def _write_audit_log(
         self,
         event: IncidentAuditEvent,
@@ -1680,6 +2485,8 @@ class SQLiteIncidentRepository:
             "actor": event.actor,
             "message": event.message,
             "payload": event.payload,
+            "previous_event_hash": event.previous_event_hash,
+            "event_hash": event.event_hash,
             "created_at": event.created_at.isoformat(),
         }
         with self._audit_log_path.open("a", encoding="utf-8") as handle:

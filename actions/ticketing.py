@@ -13,7 +13,7 @@ import string
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib import error, request
 
 from loguru import logger
@@ -30,6 +30,14 @@ class BaseTicketingAdapter(ABC):
     def create_ticket(self, ticket: dict) -> None:
         """Persist or publish the ticket payload."""
 
+    @abstractmethod
+    def append_comment(self, ticket_id: str, comment: dict[str, Any]) -> None:
+        """Append an analyst or automation comment to the ticket."""
+
+    @abstractmethod
+    def sync_state(self, ticket_id: str, update: dict[str, Any]) -> None:
+        """Synchronize case state metadata back to the ticket."""
+
 
 class JsonTicketingAdapter(BaseTicketingAdapter):
     def __init__(self, db_path: Optional[Path] = None) -> None:
@@ -37,19 +45,60 @@ class JsonTicketingAdapter(BaseTicketingAdapter):
 
     def create_ticket(self, ticket: dict) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = self._read_tickets()
+        ticket = {
+            **ticket,
+            "comments": list(ticket.get("comments") or []),
+            "sync_history": list(ticket.get("sync_history") or []),
+            "updated_at": ticket.get("created_at") or utc_isoformat_z(),
+        }
+        existing.append(ticket)
+        self._write_tickets(existing)
 
-        existing: list = []
+    def append_comment(self, ticket_id: str, comment: dict[str, Any]) -> None:
+        tickets = self._read_tickets()
+        ticket = self._find_ticket(tickets, ticket_id)
+        comments = list(ticket.get("comments") or [])
+        comments.append(comment)
+        ticket["comments"] = comments
+        ticket["updated_at"] = comment.get("created_at") or utc_isoformat_z()
+        self._write_tickets(tickets)
+
+    def sync_state(self, ticket_id: str, update: dict[str, Any]) -> None:
+        tickets = self._read_tickets()
+        ticket = self._find_ticket(tickets, ticket_id)
+        if update.get("case_status"):
+            ticket["status"] = update["case_status"]
+        if "case_owner" in update:
+            ticket["owner"] = update["case_owner"]
+        history = list(ticket.get("sync_history") or [])
+        history.append(update)
+        ticket["sync_history"] = history
+        ticket["updated_at"] = update.get("updated_at") or utc_isoformat_z()
+        self._write_tickets(tickets)
+
+    def _read_tickets(self) -> list[dict[str, Any]]:
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
         if self._db_path.exists():
             try:
                 with self._db_path.open("r", encoding="utf-8") as handle:
-                    existing = json.load(handle)
+                    data = json.load(handle)
+                    if isinstance(data, list):
+                        return data
             except (json.JSONDecodeError, IOError):
-                existing = []
+                return []
+        return []
 
-        existing.append(ticket)
-
+    def _write_tickets(self, tickets: list[dict[str, Any]]) -> None:
         with self._db_path.open("w", encoding="utf-8") as handle:
-            json.dump(existing, handle, indent=2, ensure_ascii=False)
+            json.dump(tickets, handle, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def _find_ticket(tickets: list[dict[str, Any]], ticket_id: str) -> dict[str, Any]:
+        for ticket in tickets:
+            if str(ticket.get("ticket_id") or "") == ticket_id:
+                return ticket
+        raise RuntimeError(f"Ticket '{ticket_id}' was not found in the local ticket store.")
 
 
 class WebhookTicketingAdapter(BaseTicketingAdapter):
@@ -68,6 +117,27 @@ class WebhookTicketingAdapter(BaseTicketingAdapter):
             raise RuntimeError("SOAR_TICKETING_WEBHOOK_URL is required for webhook ticketing.")
 
     def create_ticket(self, ticket: dict) -> None:
+        self._post_event("ticket.created", ticket)
+
+    def append_comment(self, ticket_id: str, comment: dict[str, Any]) -> None:
+        self._post_event(
+            "ticket.comment_added",
+            {
+                "ticket_id": ticket_id,
+                "comment": comment,
+            },
+        )
+
+    def sync_state(self, ticket_id: str, update: dict[str, Any]) -> None:
+        self._post_event(
+            "ticket.state_synced",
+            {
+                "ticket_id": ticket_id,
+                "update": update,
+            },
+        )
+
+    def _post_event(self, event_type: str, payload: dict[str, Any]) -> None:
         headers = {
             "content-type": "application/json",
             "accept": "application/json",
@@ -77,7 +147,7 @@ class WebhookTicketingAdapter(BaseTicketingAdapter):
 
         http_request = request.Request(
             self._webhook_url,
-            data=json.dumps(ticket, ensure_ascii=False).encode("utf-8"),
+            data=json.dumps({"event_type": event_type, "payload": payload}, ensure_ascii=False).encode("utf-8"),
             headers=headers,
             method="POST",
         )
@@ -165,6 +235,8 @@ def execute(
         "created_at": utc_isoformat_z(),
         "sla_deadline": _calculate_sla(risk_level),
         "provider": provider,
+        "comments": [],
+        "sync_history": [],
     }
 
     adapter.create_ticket(ticket)
@@ -183,6 +255,48 @@ def execute(
             operator=operator,
         ),
         ticket_id,
+    )
+
+
+def append_comment(
+    *,
+    ticket_id: str,
+    comment: str,
+    author: str = "SOAR_AUTO",
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    adapter = build_ticketing_adapter()
+    adapter.append_comment(
+        ticket_id,
+        {
+            "author": author,
+            "comment": comment,
+            "metadata": metadata or {},
+            "created_at": utc_isoformat_z(),
+        },
+    )
+
+
+def sync_state(
+    *,
+    ticket_id: str,
+    case_status: str,
+    case_owner: Optional[str] = None,
+    comment: Optional[str] = None,
+    actor: str = "SOAR_AUTO",
+    metadata: Optional[dict[str, Any]] = None,
+) -> None:
+    adapter = build_ticketing_adapter()
+    adapter.sync_state(
+        ticket_id,
+        {
+            "case_status": case_status,
+            "case_owner": case_owner,
+            "comment": comment,
+            "actor": actor,
+            "metadata": metadata or {},
+            "updated_at": utc_isoformat_z(),
+        },
     )
 
 

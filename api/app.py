@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,23 +14,26 @@ from fastapi.responses import FileResponse
 from alert_generator.generator import generate_alert
 from api.schemas import (
     ActionApprovalRequest,
+    ActionRollbackRequest,
     BulkIncidentUpdateRequest,
     DashboardBootstrapResponse,
     DashboardSampleOptionResponse,
     DashboardScenarioOptionResponse,
     IncidentCaseUpdateRequest,
     IncidentNoteCreateRequest,
+    IncidentReopenRequest,
     IncidentRecordResponse,
-    ReadinessResponse,
-    SavedFilterCreateRequest,
-    SavedFilterResponse,
     IncidentSummaryResponse,
     ProcessAlertRequest,
     ProcessIncidentResponse,
     ProcessScenarioRequest,
+    ReadinessResponse,
+    SavedFilterCreateRequest,
+    SavedFilterResponse,
     redact_incident_record,
 )
 from env_utils import load_local_env_files
+from observability import observability
 from security import (
     ROLE_INCIDENT_PROCESS,
     ROLE_INCIDENT_READ,
@@ -96,6 +100,51 @@ def _require_bound_principal(principal: AuthenticatedPrincipal) -> Authenticated
 
 def _principal_actor(principal: AuthenticatedPrincipal) -> str:
     return principal.agent_id or principal.principal_id
+
+
+@contextmanager
+def _route_context(
+    route_name: str,
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    **fields: Any,
+) -> Iterator[AuthenticatedPrincipal | None]:
+    bound_principal = _require_bound_principal(principal) if principal is not None else None
+    status = "ok"
+    with observability.trace(
+        f"api.{route_name}",
+        route_name=route_name,
+        actor=_principal_actor(bound_principal) if bound_principal is not None else None,
+        **fields,
+    ):
+        try:
+            yield bound_principal
+        except HTTPException as exc:
+            status = str(exc.status_code)
+            observability.emit_event(
+                "warning",
+                "api.request_failed",
+                message=f"{route_name} failed",
+                route_name=route_name,
+                status_code=exc.status_code,
+            )
+            raise
+        except Exception as exc:
+            status = "error"
+            observability.emit_event(
+                "error",
+                "api.request_failed",
+                message=f"{route_name} failed",
+                route_name=route_name,
+                error=exc.__class__.__name__,
+            )
+            raise
+        finally:
+            observability.metrics.incr(
+                "api.requests_total",
+                route_name=route_name,
+                status=status,
+            )
 
 
 def _get_incident_or_404(alert_id: str) -> dict[str, Any]:
@@ -229,19 +278,30 @@ def get_dashboard_bootstrap() -> DashboardBootstrapResponse:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {
-        "status": "ok",
-        "service": "soar-playbook-api",
-        "version": app.version,
-    }
+    with _route_context("health"):
+        return {
+            "status": "ok",
+            "service": "soar-playbook-api",
+            "version": app.version,
+        }
 
 
 @app.get("/api/v1/ready", response_model=ReadinessResponse)
 def readiness(
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_READ, ROLE_INCIDENT_PROCESS)),
 ) -> ReadinessResponse:
-    principal = _require_bound_principal(principal)
-    return ReadinessResponse.model_validate(get_workflow_service().get_readiness())
+    with _route_context("ready", principal=principal) as bound_principal:
+        assert bound_principal is not None
+        return ReadinessResponse.model_validate(get_workflow_service().get_readiness())
+
+
+@app.get("/api/v1/observability", response_model=dict[str, Any])
+def observability_snapshot(
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_READ, ROLE_INCIDENT_PROCESS)),
+) -> dict[str, Any]:
+    with _route_context("observability", principal=principal) as bound_principal:
+        assert bound_principal is not None
+        return get_workflow_service().get_observability_snapshot()
 
 
 @app.get("/api/v1/dashboard/bootstrap", response_model=DashboardBootstrapResponse)
@@ -259,14 +319,20 @@ def process_incident(
     request: ProcessAlertRequest,
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> ProcessIncidentResponse:
-    principal = _require_bound_principal(principal)
-    _assert_processable_alert_payload(request.alert)
-    result = get_workflow_service().process_alert(
-        request.alert,
-        generate_report=request.generate_report,
-        export_pdf=request.export_pdf,
-    )
-    return ProcessIncidentResponse.from_workflow_result(result)
+    with _route_context(
+        "process_incident",
+        principal=principal,
+        alert_id=request.alert.alert_id,
+        hostname=request.alert.hostname,
+    ) as bound_principal:
+        assert bound_principal is not None
+        _assert_processable_alert_payload(request.alert)
+        result = get_workflow_service().process_alert(
+            request.alert,
+            generate_report=request.generate_report,
+            export_pdf=request.export_pdf,
+        )
+        return ProcessIncidentResponse.from_workflow_result(result)
 
 
 @app.post("/api/v1/incidents/process-scenario", response_model=ProcessIncidentResponse)
@@ -274,17 +340,23 @@ def process_scenario(
     request: ProcessScenarioRequest,
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> ProcessIncidentResponse:
-    principal = _require_bound_principal(principal)
-    alert = generate_alert(
+    with _route_context(
+        "process_scenario",
+        principal=principal,
         scenario=request.scenario,
         seed=request.seed,
-    )
-    result = get_workflow_service().process_alert(
-        alert,
-        generate_report=request.generate_report,
-        export_pdf=request.export_pdf,
-    )
-    return ProcessIncidentResponse.from_workflow_result(result)
+    ) as bound_principal:
+        assert bound_principal is not None
+        alert = generate_alert(
+            scenario=request.scenario,
+            seed=request.seed,
+        )
+        result = get_workflow_service().process_alert(
+            alert,
+            generate_report=request.generate_report,
+            export_pdf=request.export_pdf,
+        )
+        return ProcessIncidentResponse.from_workflow_result(result)
 
 
 @app.get("/api/v1/incidents", response_model=list[IncidentSummaryResponse])
@@ -298,17 +370,28 @@ def list_incidents(
     case_owner: Optional[str] = None,
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_READ)),
 ) -> list[IncidentSummaryResponse]:
-    principal = _require_bound_principal(principal)
-    incidents = get_workflow_service().list_incidents(
+    with _route_context(
+        "list_incidents",
+        principal=principal,
         limit=limit,
-        status=status,
+        status_filter=status,
         risk_level=risk_level,
         hostname=hostname,
         ticket_id=ticket_id,
         case_status=case_status,
         case_owner=case_owner,
-    )
-    return [IncidentSummaryResponse.model_validate(item) for item in incidents]
+    ) as bound_principal:
+        assert bound_principal is not None
+        incidents = get_workflow_service().list_incidents(
+            limit=limit,
+            status=status,
+            risk_level=risk_level,
+            hostname=hostname,
+            ticket_id=ticket_id,
+            case_status=case_status,
+            case_owner=case_owner,
+        )
+        return [IncidentSummaryResponse.model_validate(item) for item in incidents]
 
 
 @app.post("/api/v1/incidents/bulk-update", response_model=list[IncidentRecordResponse])
@@ -370,17 +453,17 @@ def update_incident_case(
     request: IncidentCaseUpdateRequest,
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> IncidentRecordResponse:
-    principal = _require_bound_principal(principal)
-    incident = get_workflow_service().update_incident_case(
-        alert_id,
-        case_status=request.case_status,
-        case_owner=request.case_owner,
-        actor=_principal_actor(principal),
-        comment=request.comment,
-    )
-    if incident is None:
-        raise HTTPException(status_code=404, detail=f"Incident not found for alert_id={alert_id}")
-    return IncidentRecordResponse.model_validate(incident)
+    with _route_context("update_incident_case", principal=principal, alert_id=alert_id) as bound_principal:
+        incident = get_workflow_service().update_incident_case(
+            alert_id,
+            case_status=request.case_status,
+            case_owner=request.case_owner,
+            actor=_principal_actor(bound_principal),
+            comment=request.comment,
+        )
+        if incident is None:
+            raise HTTPException(status_code=404, detail=f"Incident not found for alert_id={alert_id}")
+        return IncidentRecordResponse.model_validate(incident)
 
 
 @app.post("/api/v1/incidents/by-alert/{alert_id}/notes")
@@ -389,15 +472,15 @@ def add_incident_note(
     request: IncidentNoteCreateRequest,
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> dict[str, Any]:
-    principal = _require_bound_principal(principal)
-    note = get_workflow_service().add_incident_note(
-        alert_id,
-        author=request.author or _principal_actor(principal),
-        body=request.body,
-    )
-    if note is None:
-        raise HTTPException(status_code=404, detail=f"Incident not found for alert_id={alert_id}")
-    return note
+    with _route_context("add_incident_note", principal=principal, alert_id=alert_id) as bound_principal:
+        note = get_workflow_service().add_incident_note(
+            alert_id,
+            author=request.author or _principal_actor(bound_principal),
+            body=request.body,
+        )
+        if note is None:
+            raise HTTPException(status_code=404, detail=f"Incident not found for alert_id={alert_id}")
+        return note
 
 
 @app.post("/api/v1/incidents/by-alert/{alert_id}/actions/{correlation_id}/approve", response_model=IncidentRecordResponse)
@@ -407,22 +490,27 @@ def approve_action(
     request: ActionApprovalRequest,
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> IncidentRecordResponse:
-    principal = _require_bound_principal(principal)
-    try:
-        incident = get_workflow_service().approve_action(
-            alert_id,
-            correlation_id,
-            actor=request.actor or _principal_actor(principal),
-            comment=request.comment,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if incident is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Queued action not found for alert_id={alert_id} correlation_id={correlation_id}",
-        )
-    return IncidentRecordResponse.model_validate(incident)
+    with _route_context(
+        "approve_action",
+        principal=principal,
+        alert_id=alert_id,
+        correlation_id=correlation_id,
+    ) as bound_principal:
+        try:
+            incident = get_workflow_service().approve_action(
+                alert_id,
+                correlation_id,
+                actor=request.actor or _principal_actor(bound_principal),
+                comment=request.comment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if incident is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Queued action not found for alert_id={alert_id} correlation_id={correlation_id}",
+            )
+        return IncidentRecordResponse.model_validate(incident)
 
 
 @app.post("/api/v1/incidents/by-alert/{alert_id}/actions/{correlation_id}/reject", response_model=IncidentRecordResponse)
@@ -432,22 +520,88 @@ def reject_action(
     request: ActionApprovalRequest,
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> IncidentRecordResponse:
-    principal = _require_bound_principal(principal)
-    try:
-        incident = get_workflow_service().reject_action(
-            alert_id,
-            correlation_id,
-            actor=request.actor or _principal_actor(principal),
-            comment=request.comment,
+    with _route_context(
+        "reject_action",
+        principal=principal,
+        alert_id=alert_id,
+        correlation_id=correlation_id,
+    ) as bound_principal:
+        try:
+            incident = get_workflow_service().reject_action(
+                alert_id,
+                correlation_id,
+                actor=request.actor or _principal_actor(bound_principal),
+                comment=request.comment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if incident is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Queued action not found for alert_id={alert_id} correlation_id={correlation_id}",
+            )
+        return IncidentRecordResponse.model_validate(incident)
+
+
+@app.post("/api/v1/incidents/by-alert/{alert_id}/actions/{correlation_id}/rollback", response_model=IncidentRecordResponse)
+def rollback_action(
+    alert_id: str,
+    correlation_id: str,
+    request: ActionRollbackRequest,
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
+) -> IncidentRecordResponse:
+    with _route_context(
+        "rollback_action",
+        principal=principal,
+        alert_id=alert_id,
+        correlation_id=correlation_id,
+    ) as bound_principal:
+        try:
+            incident = get_workflow_service().rollback_action(
+                alert_id,
+                correlation_id,
+                actor=request.actor or _principal_actor(bound_principal),
+                comment=request.comment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if incident is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Queued action not found for alert_id={alert_id} correlation_id={correlation_id}",
+            )
+        return IncidentRecordResponse.model_validate(incident)
+
+
+@app.post("/api/v1/incidents/by-alert/{alert_id}/reopen", response_model=IncidentRecordResponse)
+def reopen_incident(
+    alert_id: str,
+    request: IncidentReopenRequest,
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
+) -> IncidentRecordResponse:
+    with _route_context("reopen_incident", principal=principal, alert_id=alert_id) as bound_principal:
+        try:
+            incident = get_workflow_service().reopen_incident(
+                alert_id,
+                actor=_principal_actor(bound_principal),
+                comment=request.comment,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if incident is None:
+            raise HTTPException(status_code=404, detail=f"Incident not found for alert_id={alert_id}")
+        return IncidentRecordResponse.model_validate(incident)
+
+
+@app.post("/api/v1/approvals/escalate-overdue", response_model=list[IncidentRecordResponse])
+def escalate_overdue_approvals(
+    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
+) -> list[IncidentRecordResponse]:
+    with _route_context("escalate_overdue_approvals", principal=principal) as bound_principal:
+        incidents = get_workflow_service().escalate_overdue_approvals(
+            actor=_principal_actor(bound_principal),
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if incident is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Queued action not found for alert_id={alert_id} correlation_id={correlation_id}",
-        )
-    return IncidentRecordResponse.model_validate(incident)
+        return [IncidentRecordResponse.model_validate(incident) for incident in incidents]
 
 
 @app.get("/api/v1/incidents/by-alert/{alert_id}/report/html")

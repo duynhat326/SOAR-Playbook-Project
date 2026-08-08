@@ -18,7 +18,9 @@ import {
   listSavedFilters,
   loadDashboardBootstrap,
   processAlert,
+  reopenIncident,
   rejectAction,
+  rollbackAction,
   saveFilter,
   setDashboardAuthToken,
   updateIncidentCase,
@@ -104,6 +106,8 @@ function toIncidentSummary(incident: IncidentRecord): IncidentSummary {
   return {
     id: incident.id,
     alert_id: incident.alert_id,
+    incident_key: incident.incident_key,
+    latest_alert_id: incident.latest_alert_id,
     hostname: incident.hostname,
     detection_name: incident.detection_name,
     risk_score: incident.risk_score,
@@ -124,6 +128,7 @@ function toIncidentSummary(incident: IncidentRecord): IncidentSummary {
     succeeded_action_count: incident.succeeded_action_count ?? actionCounts.succeeded_action_count,
     active_action_count: incident.active_action_count ?? actionCounts.active_action_count,
     note_count: incident.note_count ?? incident.notes.length,
+    related_alert_count: incident.related_alert_count ?? incident.related_alert_ids.length ?? 1,
   };
 }
 
@@ -471,6 +476,49 @@ export default function App() {
     }
   }
 
+  async function handleRollbackAction(correlationId: string, comment?: string) {
+    if (!selectedAlertId) {
+      return;
+    }
+    try {
+      const result = await rollbackAction(selectedAlertId, correlationId, { actor: DEFAULT_ANALYST, comment });
+      startTransition(() => {
+        setApiMode(result.mode);
+        setSelectedIncident(result.incident);
+        setIncidentDetails((current) => ({
+          ...current,
+          [result.incident.alert_id]: result.incident,
+        }));
+        setIncidents((current) => upsertIncidentSummary(current, toIncidentSummary(result.incident)));
+        setBanner({ tone: "success", message: `Cancelled queued action ${correlationId}.` });
+      });
+      await refreshReadiness();
+    } catch (error) {
+      startTransition(() => setBanner({ tone: "error", message: errorMessage(error) }));
+    }
+  }
+
+  async function handleReopenIncident(comment?: string) {
+    if (!selectedAlertId) {
+      return;
+    }
+    try {
+      const result = await reopenIncident(selectedAlertId, { comment });
+      startTransition(() => {
+        setApiMode(result.mode);
+        setSelectedIncident(result.incident);
+        setIncidentDetails((current) => ({
+          ...current,
+          [result.incident.alert_id]: result.incident,
+        }));
+        setIncidents((current) => upsertIncidentSummary(current, toIncidentSummary(result.incident)));
+        setBanner({ tone: "success", message: `Reopened incident ${result.incident.alert_id}.` });
+      });
+    } catch (error) {
+      startTransition(() => setBanner({ tone: "error", message: errorMessage(error) }));
+    }
+  }
+
   async function handleBulkUpdate(payload: { case_status?: string; case_owner?: string; comment?: string }) {
     if (selectedRows.length === 0) {
       return;
@@ -705,6 +753,38 @@ export default function App() {
   const latestCompletedAt = incidents[0]?.completed_at ?? null;
   const visibleReadinessDependencies =
     readiness?.dependencies.filter((dependency) => dependency.name !== "incident_repository") ?? [];
+  const observabilitySnapshot = readiness?.observability ?? {};
+  const observabilityMetrics =
+    observabilitySnapshot &&
+    typeof observabilitySnapshot === "object" &&
+    "metrics" in observabilitySnapshot &&
+    observabilitySnapshot.metrics &&
+    typeof observabilitySnapshot.metrics === "object"
+      ? (observabilitySnapshot.metrics as Record<string, unknown>)
+      : {};
+  const observabilityCounters = Array.isArray(observabilityMetrics.counters) ? observabilityMetrics.counters.length : 0;
+  const observabilityTimers = Array.isArray(observabilityMetrics.timers) ? observabilityMetrics.timers.length : 0;
+  const observabilityTraces =
+    observabilitySnapshot &&
+    typeof observabilitySnapshot === "object" &&
+    "traces" in observabilitySnapshot &&
+    observabilitySnapshot.traces &&
+    typeof observabilitySnapshot.traces === "object" &&
+    Array.isArray((observabilitySnapshot.traces as Record<string, unknown>).recent)
+      ? ((observabilitySnapshot.traces as Record<string, unknown>).recent as unknown[]).length
+      : 0;
+  const observabilityCircuits =
+    observabilitySnapshot &&
+    typeof observabilitySnapshot === "object" &&
+    Array.isArray((observabilitySnapshot as Record<string, unknown>).circuits)
+      ? ((observabilitySnapshot as Record<string, unknown>).circuits as unknown[]).length
+      : 0;
+  const observabilityLogPath =
+    observabilitySnapshot &&
+    typeof observabilitySnapshot === "object" &&
+    typeof (observabilitySnapshot as Record<string, unknown>).structured_log_path === "string"
+      ? ((observabilitySnapshot as Record<string, unknown>).structured_log_path as string)
+      : "";
 
   return (
     <div className="shell">
@@ -771,6 +851,21 @@ export default function App() {
               </span>
             </div>
             <div className="readiness-grid">
+              {observabilityLogPath ? (
+                <div className="readiness-card">
+                  <div className="readiness-head">
+                    <strong>Observability</strong>
+                    <span className="badge tone-neutral">Runtime</span>
+                  </div>
+                  <p>
+                    {observabilityCounters} counters, {observabilityTimers} timers, {observabilityTraces} recent traces,
+                    {` ${observabilityCircuits} `}circuit snapshots.
+                  </p>
+                  <p>
+                    <code>{observabilityLogPath}</code>
+                  </p>
+                </div>
+              ) : null}
               {visibleReadinessDependencies.map((dependency) => (
                 <div className="readiness-card" key={dependency.name}>
                   <div className="readiness-head">
@@ -880,6 +975,8 @@ export default function App() {
                 onAddNote={handleAddNote}
                 onApproveAction={handleApproveAction}
                 onRejectAction={handleRejectAction}
+                onRollbackAction={handleRollbackAction}
+                onReopenIncident={handleReopenIncident}
               />
             </section>
           </>

@@ -50,6 +50,15 @@ class AssetCriticality(str, Enum):
     LOW = "low"
 
 
+class PolicyStatus(str, Enum):
+    """Governance state for a response policy version."""
+
+    DRAFT = "draft"
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    DEPRECATED = "deprecated"
+
+
 class ResponseAction(str, Enum):
     """Response actions the policy engine can request."""
 
@@ -91,6 +100,14 @@ class IncidentCaseStatus(str, Enum):
     MONITORING = "monitoring"
     RESOLVED = "resolved"
     CLOSED = "closed"
+
+
+class CorrelationOutcome(str, Enum):
+    """Lifecycle outcome for alert-to-incident correlation."""
+
+    NEW_INCIDENT = "new_incident"
+    ATTACHED_TO_EXISTING = "attached_to_existing"
+    REOPENED_INCIDENT = "reopened_incident"
 
 
 class MalwareAlert(BaseModel):
@@ -285,9 +302,17 @@ class ActionResult(BaseModel):
     requires_approval: bool = Field(default=False, description="Whether analyst approval is required before execution")
     approval_state: ActionApprovalState = Field(default=ActionApprovalState.NOT_REQUIRED)
     approval_reason: Optional[str] = Field(default=None, description="Why this action requires analyst approval")
+    approval_comment: Optional[str] = Field(default=None, description="Latest analyst approval or rollback comment")
     approved_by: Optional[str] = Field(default=None, description="Approver or rejecting analyst")
     approved_at: Optional[datetime] = Field(default=None, description="Last approval decision timestamp")
+    approval_due_at: Optional[datetime] = Field(default=None, description="When analyst approval is due")
+    approval_escalates_at: Optional[datetime] = Field(default=None, description="When the pending approval should escalate")
+    escalation_targets: List[str] = Field(default_factory=list, description="Escalation recipients for overdue approvals")
+    approval_escalated_at: Optional[datetime] = Field(default=None, description="When the approval was escalated")
+    rollback_requested_by: Optional[str] = Field(default=None, description="Operator that rolled back a queued action")
+    rollback_requested_at: Optional[datetime] = Field(default=None, description="When the queued action was rolled back")
     operator: Optional[str] = Field(default=None, description="Worker or analyst that last handled the action")
+    policy_version: Optional[int] = Field(default=None, description="Policy version that decided this action")
 
     @field_validator("status", mode="before")
     @classmethod
@@ -335,8 +360,15 @@ class QueuedActionRequest(BaseModel):
     requires_approval: bool = Field(default=False)
     approval_state: ActionApprovalState = Field(default=ActionApprovalState.NOT_REQUIRED)
     approval_reason: Optional[str] = Field(default=None)
+    approval_comment: Optional[str] = Field(default=None)
     approved_by: Optional[str] = Field(default=None)
     approved_at: Optional[datetime] = Field(default=None)
+    approval_due_at: Optional[datetime] = Field(default=None)
+    approval_escalates_at: Optional[datetime] = Field(default=None)
+    escalation_targets: List[str] = Field(default_factory=list)
+    approval_escalated_at: Optional[datetime] = Field(default=None)
+    rollback_requested_by: Optional[str] = Field(default=None)
+    rollback_requested_at: Optional[datetime] = Field(default=None)
     requested_at: datetime = Field(default_factory=utc_now)
 
 
@@ -358,7 +390,44 @@ class IncidentAuditEvent(BaseModel):
     actor: str
     message: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    previous_event_hash: Optional[str] = Field(default=None)
+    event_hash: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class CorrelationEvidence(BaseModel):
+    """Correlation fingerprint evidence that linked an alert to an incident."""
+
+    strategy: str
+    fields: List[str] = Field(default_factory=list)
+    fingerprint: str
+    values: dict[str, str] = Field(default_factory=dict)
+    matched_alert_ids: List[str] = Field(default_factory=list)
+
+
+class IncidentCorrelationTrace(BaseModel):
+    """Correlation decision attached to the latest alert processed for an incident."""
+
+    enabled: bool = Field(default=False)
+    window: Optional[str] = Field(default=None)
+    outcome: CorrelationOutcome = Field(default=CorrelationOutcome.NEW_INCIDENT)
+    incident_key: Optional[str] = Field(default=None)
+    matched_incident_id: Optional[int] = Field(default=None)
+    matched_alert_ids: List[str] = Field(default_factory=list)
+    related_alert_ids: List[str] = Field(default_factory=list)
+    related_alert_count: int = Field(default=1, ge=0)
+    evidence: List[CorrelationEvidence] = Field(default_factory=list)
+    candidate_fingerprints: List[CorrelationEvidence] = Field(default_factory=list)
+
+
+class PolicyMetadataSnapshot(BaseModel):
+    """Immutable policy metadata attached to incident decisions."""
+
+    version: int
+    status: PolicyStatus
+    owner: str
+    change_reason: str
+    created_at: datetime
 
 
 class PolicyExecutionTrace(BaseModel):
@@ -369,6 +438,13 @@ class PolicyExecutionTrace(BaseModel):
     queue_name: Optional[str] = Field(default=None)
     fallback_reason: Optional[str] = Field(default=None)
     queued_actions: List[QueuedActionRequest] = Field(default_factory=list)
+    policy_version: Optional[int] = Field(default=None)
+    policy_status: Optional[PolicyStatus] = Field(default=None)
+    canary_enabled: bool = Field(default=False)
+    canary_targeted: Optional[bool] = Field(default=None)
+    canary_reason: Optional[str] = Field(default=None)
+    canary_percentage: Optional[int] = Field(default=None)
+    canary_bucket: Optional[int] = Field(default=None)
 
 
 class IncidentResponse(BaseModel):
@@ -396,6 +472,12 @@ class IncidentResponse(BaseModel):
         default=None,
         description="Path to the generated incident report",
     )
+    policy_version: Optional[int] = Field(
+        default=None,
+        description="Policy version that produced this incident response",
+    )
+    policy_metadata: Optional[PolicyMetadataSnapshot] = Field(default=None)
+    correlation_trace: IncidentCorrelationTrace = Field(default_factory=IncidentCorrelationTrace)
     execution_trace: PolicyExecutionTrace = Field(default_factory=PolicyExecutionTrace)
 
     @property

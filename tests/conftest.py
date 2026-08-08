@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 import pytest
 
 import api.app as api_app
+from observability import downstream_guard, observability
 from security import (
     ROLE_INCIDENT_PROCESS,
     ROLE_INCIDENT_READ,
@@ -26,9 +27,13 @@ def isolate_test_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
 def clear_cached_services() -> Iterator[None]:
     api_app.get_workflow_service.cache_clear()
     clear_auth_cache()
+    observability.reset_for_tests()
+    downstream_guard.reset_for_tests()
     yield
     api_app.get_workflow_service.cache_clear()
     clear_auth_cache()
+    observability.reset_for_tests()
+    downstream_guard.reset_for_tests()
 
 
 @pytest.fixture

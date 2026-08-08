@@ -1,0 +1,90 @@
+suite_name: sanitized-source-replay
+fixtures:
+  - fixture_id: wazuh-malicious-hash-initial
+    provider: wazuh
+    payload_path: wazuh/alert_01_encoded_powershell.json
+    description: Initial SIEM ingest with a known-malicious hash on a low-tier workstation.
+    expect_alert:
+      alert_id: wazuh-evt-001
+      hostname: DESKTOP-ABC123
+      username: jane.smith
+      process_name: powershell.exe
+      file_path: 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+      file_hash: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2'
+      parent_process: explorer.exe
+      destination_ip: 203.0.113.5
+      severity: high
+      command_line_contains:
+        - powershell.exe
+        - -enc
+      detection_name_contains:
+        - Wazuh
+        - Suspicious PowerShell
+    expect_workflow:
+      triggered_actions:
+        - isolate_host
+        - create_ticket
+        - notify_soc
+      ticket_expected: true
+      correlation_outcome: new_incident
+      related_alert_count: 1
+      policy_reasoning_contains:
+        - Rule 1 [TRIGGERED]
+  - fixture_id: wazuh-malicious-hash-followup
+    provider: wazuh
+    payload_path: wazuh/alert_02_encoded_powershell_followup.json
+    description: Follow-up SIEM alert on the same host, user, and hash inside the correlation window.
+    expect_alert:
+      alert_id: wazuh-evt-002
+      hostname: DESKTOP-ABC123
+      username: jane.smith
+      process_name: powershell.exe
+      file_hash: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2'
+      parent_process: cmd.exe
+      destination_ip: 203.0.113.5
+      severity: high
+      command_line_contains:
+        - EncodedCommand
+      detection_name_contains:
+        - Wazuh
+    expect_workflow:
+      triggered_actions:
+        - isolate_host
+        - create_ticket
+        - notify_soc
+      ticket_expected: true
+      correlation_outcome: attached_to_existing
+      related_alert_count: 2
+  - fixture_id: defender-critical-c2
+    provider: defender
+    payload_path: microsoft_defender/alert_01_critical_c2.json
+    description: EDR alert on a critical finance workstation running a dangerous process and beaconing to a known C2 IP.
+    expect_alert:
+      alert_id: defender-alert-001
+      hostname: WS-FINANCE-01
+      username: cfo
+      process_name: mimikatz.exe
+      file_path: 'C:\Users\cfo\AppData\Local\Temp\mimikatz.exe'
+      file_hash: '0000000000000000000000000000000000000000000000000000000000000002'
+      parent_process: explorer.exe
+      destination_ip: 185.220.101.45
+      severity: high
+      command_line_contains:
+        - sekurlsa::logonpasswords
+      detection_name_contains:
+        - Microsoft Defender
+        - C2
+    expect_workflow:
+      triggered_actions:
+        - kill_process
+        - escalate
+        - block_ip
+        - create_ticket
+        - notify_soc
+      ticket_expected: true
+      correlation_outcome: new_incident
+      related_alert_count: 1
+      policy_reasoning_contains:
+        - Rule 2 [TRIGGERED]
+        - Rule 3 [TRIGGERED]
+        - Rule 4 [TRIGGERED]

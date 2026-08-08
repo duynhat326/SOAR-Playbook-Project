@@ -1,0 +1,25 @@
+{
+  "id": "wazuh-evt-001",
+  "timestamp": "2026-08-08T08:15:00Z",
+  "agent": {
+    "id": "001",
+    "name": "desktop-abc123.corp.local"
+  },
+  "rule": {
+    "id": "92001",
+    "level": 12,
+    "description": "Suspicious PowerShell encoded command execution"
+  },
+  "data": {
+    "win": {
+      "eventdata": {
+        "user": "ACME\\jane.smith",
+        "image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "parentImage": "C:\\Windows\\explorer.exe",
+        "commandLine": "powershell.exe -nop -w hidden -enc SGVsbG8=",
+        "destinationIp": "203.0.113.5",
+        "hashes": "MD5=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;SHA1=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;SHA256=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+      }
+    }
+  }
+}

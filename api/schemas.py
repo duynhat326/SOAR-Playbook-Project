@@ -96,9 +96,17 @@ class IncidentActionResultResponse(BaseModel):
     requires_approval: bool = False
     approval_state: str = "not_required"
     approval_reason: Optional[str] = None
+    approval_comment: Optional[str] = None
     approved_by: Optional[str] = None
     approved_at: Optional[str] = None
+    approval_due_at: Optional[str] = None
+    approval_escalates_at: Optional[str] = None
+    escalation_targets: list[str] = Field(default_factory=list)
+    approval_escalated_at: Optional[str] = None
+    rollback_requested_by: Optional[str] = None
+    rollback_requested_at: Optional[str] = None
     operator: Optional[str] = None
+    policy_version: Optional[int] = None
 
 
 class StoredReportResponse(ReportArtifactsResponse):
@@ -108,6 +116,8 @@ class StoredReportResponse(ReportArtifactsResponse):
 class IncidentSummaryResponse(BaseModel):
     id: int
     alert_id: str
+    incident_key: str
+    latest_alert_id: str
     hostname: str
     detection_name: str
     risk_score: float
@@ -125,11 +135,14 @@ class IncidentSummaryResponse(BaseModel):
     succeeded_action_count: int = 0
     active_action_count: int = 0
     note_count: int = 0
+    related_alert_count: int = 1
 
 
 class IncidentRecordResponse(BaseModel):
     id: int
     alert_id: str
+    incident_key: str
+    latest_alert_id: str
     hostname: str
     detection_name: str
     risk_score: float
@@ -157,6 +170,8 @@ class IncidentRecordResponse(BaseModel):
     report: StoredReportResponse
     notes: list[IncidentNote] = Field(default_factory=list)
     audit_events: list[IncidentAuditEvent] = Field(default_factory=list)
+    related_alert_ids: list[str] = Field(default_factory=list)
+    related_alert_count: int = 1
 
 
 class IncidentCaseUpdateRequest(BaseModel):
@@ -179,6 +194,15 @@ class BulkIncidentUpdateRequest(BaseModel):
 
 class ActionApprovalRequest(BaseModel):
     actor: str
+    comment: Optional[str] = None
+
+
+class ActionRollbackRequest(BaseModel):
+    actor: str
+    comment: Optional[str] = None
+
+
+class IncidentReopenRequest(BaseModel):
     comment: Optional[str] = None
 
 
@@ -209,6 +233,7 @@ class ReadinessResponse(BaseModel):
     status: str
     dependencies: list[DependencyReadinessResponse] = Field(default_factory=list)
     queue_metrics: dict[str, Any] = Field(default_factory=dict)
+    observability: dict[str, Any] = Field(default_factory=dict)
 
 
 _REDACTED_FIELDS = {

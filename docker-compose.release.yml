@@ -1,0 +1,54 @@
+services:
+  api:
+    image: ghcr.io/${SOAR_IMAGE_NAMESPACE}/soar-playbook-api:${SOAR_IMAGE_TAG}
+    env_file:
+      - ${SOAR_ENV_FILE:-deploy.env}
+    ports:
+      - "${SOAR_API_PORT:-8000}:8000"
+    volumes:
+      - soar_output:/app/output
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/${SOAR_IMAGE_NAMESPACE}/soar-playbook-worker:${SOAR_IMAGE_TAG}
+    env_file:
+      - ${SOAR_ENV_FILE:-deploy.env}
+    volumes:
+      - soar_output:/app/output
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dashboard:
+    image: ghcr.io/${SOAR_IMAGE_NAMESPACE}/soar-playbook-dashboard:${SOAR_IMAGE_TAG}
+    ports:
+      - "${SOAR_DASHBOARD_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  migrate:
+    image: ghcr.io/${SOAR_IMAGE_NAMESPACE}/soar-playbook-api:${SOAR_IMAGE_TAG}
+    profiles:
+      - ops
+    env_file:
+      - ${SOAR_ENV_FILE:-deploy.env}
+    command:
+      - python
+      - scripts/apply_postgres_migrations.py
+    restart: "no"
+
+volumes:
+  soar_output:

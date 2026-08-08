@@ -1,6 +1,44 @@
 version: 1
+metadata:
+  version: 1
+  status: active
+  owner: soc.platform
+  change_reason: Initial production hardening baseline
+  created_at: '2026-08-08T00:00:00Z'
+correlation:
+  enabled: true
+  window: 1h
+  reopen_closed_incidents: true
+  strategies:
+    - name: host_user_hash
+      fields:
+        - hostname
+        - username
+        - file_hash
+    - name: host_user_process
+      fields:
+        - hostname
+        - username
+        - process_name
+    - name: host_destination_ip
+      fields:
+        - hostname
+        - destination_ip
+    - name: user_file_hash
+      fields:
+        - username
+        - file_hash
 execution:
   mode: sync
+  approval:
+    rules: []
+  canary:
+    enabled: false
+    hostname_patterns: []
+    asset_tags: []
+    environments: []
+    workspaces: []
+    percentage: 100
   queue:
     queue_name: policy-actions
     correlation_prefix: policy

@@ -1,0 +1,44 @@
+FROM python:3.13-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    SOAR_SQLITE_FALLBACK_PATH=/app/output/soar-local.db
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        fonts-dejavu-core \
+        libcairo2 \
+        libffi8 \
+        libgdk-pixbuf-2.0-0 \
+        libpango-1.0-0 \
+        shared-mime-info \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /app/requirements.txt
+
+RUN pip install --upgrade pip \
+    && pip install -r /app/requirements.txt
+
+COPY . /app
+
+RUN useradd --create-home --uid 10001 soar \
+    && mkdir -p /app/output \
+    && chown -R soar:soar /app
+
+USER soar
+
+FROM base AS api
+
+EXPOSE 8000
+
+CMD ["python", "-m", "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM base AS worker
+
+CMD ["python", "scripts/run_remediation_worker.py"]

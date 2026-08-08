@@ -11,6 +11,8 @@ interface IncidentDetailProps {
   onAddNote: (body: string) => void;
   onApproveAction: (correlationId: string, comment?: string) => void;
   onRejectAction: (correlationId: string, comment?: string) => void;
+  onRollbackAction: (correlationId: string, comment?: string) => void;
+  onReopenIncident: (comment?: string) => void;
 }
 
 function present(value: string | null | undefined, fallback = "Not set"): string {
@@ -64,6 +66,14 @@ function actionStatusTone(status: string): string {
     return "tone-neutral";
   }
   return "tone-low";
+}
+
+function isPastTimestamp(value: string | null | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && timestamp <= Date.now();
 }
 
 function renderMarkdownPreview(markdownContent: string): ReactNode {
@@ -265,6 +275,8 @@ export function IncidentDetail({
   onAddNote,
   onApproveAction,
   onRejectAction,
+  onRollbackAction,
+  onReopenIncident,
 }: IncidentDetailProps) {
   const [caseOwnerDraft, setCaseOwnerDraft] = useState("");
   const [caseStatusDraft, setCaseStatusDraft] = useState<IncidentCaseStatus>("new");
@@ -312,6 +324,18 @@ export function IncidentDetail({
     fallback_reason: null,
     queued_actions: [],
   };
+  const correlationTrace = incident.response.correlation_trace ?? {
+    enabled: false,
+    window: null,
+    outcome: "new_incident",
+    incident_key: incident.incident_key,
+    matched_incident_id: null,
+    matched_alert_ids: [],
+    related_alert_ids: incident.related_alert_ids ?? [],
+    related_alert_count: incident.related_alert_count ?? 1,
+    evidence: [],
+    candidate_fingerprints: [],
+  };
   const queuedActions = executionTrace.queued_actions ?? [];
   const reportHtmlPath = incident.report.html_path ?? incident.report_path;
   const reportArtifacts = [
@@ -326,6 +350,8 @@ export function IncidentDetail({
     { label: "Received", value: incident.alert.received_at ? formatDateTime(incident.alert.received_at) : "Not set" },
     { label: "Completed", value: formatDateTime(incident.completed_at) },
     { label: "Risk", value: formatRiskScore(incident.risk_score) },
+    { label: "Incident key", value: incident.incident_key },
+    { label: "Grouped alerts", value: `${incident.related_alert_count}` },
     { label: "Queue", value: `${incident.queued_action_count}/${incident.pending_approval_count}/${incident.running_action_count}/${incident.failed_action_count}` },
     { label: "Notes", value: `${incident.note_count}` },
   ];
@@ -390,6 +416,15 @@ export function IncidentDetail({
             >
               Update case
             </button>
+            {(incident.case_status === "resolved" || incident.case_status === "closed") && (
+              <button
+                className="secondary-button compact-button"
+                onClick={() => onReopenIncident("Reopened from dashboard for additional analyst follow-up")}
+                type="button"
+              >
+                Reopen case
+              </button>
+            )}
           </div>
           <div className="stack-sm">
             <strong className="subtle-title">Analyst notes</strong>
@@ -481,6 +516,63 @@ export function IncidentDetail({
             </div>
           </div>
         </article>
+
+        <article className="soft-card">
+          <strong className="card-title">Correlation and dedup</strong>
+          <div className="key-grid">
+            <div className="key-item">
+              <span>Outcome</span>
+              <strong>{titleCase(String(correlationTrace.outcome).replace(/_/g, " "))}</strong>
+            </div>
+            <div className="key-item">
+              <span>Window</span>
+              <strong>{correlationTrace.window ?? "Not configured"}</strong>
+            </div>
+            <div className="key-item">
+              <span>Latest alert</span>
+              <strong>{incident.latest_alert_id}</strong>
+            </div>
+            <div className="key-item">
+              <span>Matched incident</span>
+              <strong>{correlationTrace.matched_incident_id ?? "New incident"}</strong>
+            </div>
+          </div>
+          <div className="stack-sm">
+            <strong className="subtle-title">Related alerts</strong>
+            {incident.related_alert_ids.length > 0 ? (
+              <div className="timeline-list">
+                {incident.related_alert_ids.map((alertId) => (
+                  <div className="timeline-item" key={alertId}>
+                    <div className="timeline-head">
+                      <strong>{alertId}</strong>
+                      <small>{alertId === incident.latest_alert_id ? "Latest" : "Grouped"}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <span className="meta-empty">No related alerts recorded.</span>
+            )}
+          </div>
+          <div className="stack-sm">
+            <strong className="subtle-title">Correlation evidence</strong>
+            {correlationTrace.evidence.length > 0 ? (
+              <div className="timeline-list">
+                {correlationTrace.evidence.map((evidence) => (
+                  <div className="timeline-item" key={`${evidence.strategy}-${evidence.fingerprint}`}>
+                    <div className="timeline-head">
+                      <strong>{evidence.strategy}</strong>
+                      <small>{evidence.fingerprint}</small>
+                    </div>
+                    <p>{Object.entries(evidence.values).map(([key, value]) => `${key}=${value}`).join(" | ")}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <span className="meta-empty">This alert created a fresh incident without prior correlation evidence.</span>
+            )}
+          </div>
+        </article>
       </div>
 
       <div className="detail-grid detail-grid-expanded">
@@ -541,6 +633,17 @@ export function IncidentDetail({
           <div className="action-list">
             {incident.action_results.map((action) => {
               const canApprove = action.requires_approval && action.approval_state === "pending" && action.correlation_id;
+              const canRollback =
+                Boolean(action.correlation_id) && (action.status === "queued" || action.status === "waiting_approval");
+              const approvalOverdue =
+                action.status === "waiting_approval" &&
+                action.approval_state === "pending" &&
+                isPastTimestamp(action.approval_due_at);
+              const escalationDue =
+                action.status === "waiting_approval" &&
+                action.approval_state === "pending" &&
+                isPastTimestamp(action.approval_escalates_at) &&
+                !action.approval_escalated_at;
               return (
                 <div className="action-item" key={`${action.action}-${action.executed_at}-${action.status}`}>
                   <div className="action-head">
@@ -549,6 +652,31 @@ export function IncidentDetail({
                   </div>
                   <p>{action.details}</p>
                   {action.approval_reason ? <small className="action-meta">{action.approval_reason}</small> : null}
+                  {action.approval_comment ? <small className="action-meta">Comment: {action.approval_comment}</small> : null}
+                  {action.approval_due_at ? (
+                    <small className="action-meta">
+                      Approval due: {formatDateTime(action.approval_due_at)}
+                      {approvalOverdue ? " | overdue" : ""}
+                    </small>
+                  ) : null}
+                  {action.approval_escalates_at ? (
+                    <small className="action-meta">
+                      Escalate at: {formatDateTime(action.approval_escalates_at)}
+                      {escalationDue ? " | escalation due" : ""}
+                    </small>
+                  ) : null}
+                  {action.escalation_targets.length > 0 ? (
+                    <small className="action-meta">Escalation targets: {action.escalation_targets.join(", ")}</small>
+                  ) : null}
+                  {action.approval_escalated_at ? (
+                    <small className="action-meta">Escalated: {formatDateTime(action.approval_escalated_at)}</small>
+                  ) : null}
+                  {action.rollback_requested_by || action.rollback_requested_at ? (
+                    <small className="action-meta">
+                      Cancelled by {action.rollback_requested_by ?? "analyst"}
+                      {action.rollback_requested_at ? ` | ${formatDateTime(action.rollback_requested_at)}` : ""}
+                    </small>
+                  ) : null}
                   {action.attempt_count > 0 || action.correlation_id ? (
                     <small className="action-meta">
                       {action.attempt_count > 0 ? `Attempt ${action.attempt_count}` : "Async action"}
@@ -557,22 +685,35 @@ export function IncidentDetail({
                     </small>
                   ) : null}
                   <small>{formatDateTime(action.executed_at)}</small>
-                  {canApprove ? (
+                  {canApprove || canRollback ? (
                     <div className="button-row">
-                      <button
-                        className="primary-button compact-button"
-                        onClick={() => onApproveAction(action.correlation_id!, "Approved from dashboard")}
-                        type="button"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        className="secondary-button compact-button"
-                        onClick={() => onRejectAction(action.correlation_id!, "Rejected from dashboard")}
-                        type="button"
-                      >
-                        Reject
-                      </button>
+                      {canApprove ? (
+                        <>
+                          <button
+                            className="primary-button compact-button"
+                            onClick={() => onApproveAction(action.correlation_id!, "Approved from dashboard")}
+                            type="button"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            className="secondary-button compact-button"
+                            onClick={() => onRejectAction(action.correlation_id!, "Rejected from dashboard")}
+                            type="button"
+                          >
+                            Reject
+                          </button>
+                        </>
+                      ) : null}
+                      {canRollback ? (
+                        <button
+                          className="secondary-button compact-button"
+                          onClick={() => onRollbackAction(action.correlation_id!, "Cancelled from dashboard before execution")}
+                          type="button"
+                        >
+                          Cancel queued action
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -851,6 +992,11 @@ export function IncidentDetail({
                   </div>
                   <p>{event.message}</p>
                   <small className="action-meta">{event.actor}</small>
+                  {event.event_hash ? <small className="action-meta">Hash: {event.event_hash.slice(0, 16)}</small> : null}
+                  {event.previous_event_hash ? (
+                    <small className="action-meta">Previous: {event.previous_event_hash.slice(0, 16)}</small>
+                  ) : null}
+                  {Object.keys(event.payload).length > 0 ? renderObjectFacts(event.payload) : null}
                 </div>
               ))
             ) : (

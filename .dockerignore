@@ -1,0 +1,17 @@
+.git
+.codegraph
+.pytest_cache
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+dashboard/node_modules
+dashboard/dist
+dashboard/test-results
+output
+repo_tree.json
+challenges_bundle.js
+*.sqlite
+*.db

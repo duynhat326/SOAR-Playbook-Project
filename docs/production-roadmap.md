@@ -18,7 +18,7 @@ This roadmap is the active delivery plan for turning the repo into a production-
 
 ## Phase 0: Repo simplification
 
-Status: `Now`
+Status: `Complete for current slice`
 
 Goals:
 
@@ -41,7 +41,7 @@ Definition of done:
 
 ## Phase 1: Integration layer
 
-Status: `Now`
+Status: `Complete for current slice`
 
 Goals:
 
@@ -50,16 +50,16 @@ Goals:
 
 Deliverables:
 
-- [ ] create `integrations/` package
-- [ ] define contracts for:
+- [x] create `integrations/` package
+- [x] define contracts for:
 - source connector
 - action connector
 - ticketing connector
 - CMDB connector
 - threat-intel connector
-- [ ] add provider registry/factory driven by config
-- [ ] move current mock actions and intel adapters behind the new contracts
-- [ ] add one end-to-end mocked integration test through the new layer
+- [x] add provider registry/factory driven by config
+- [x] move current mock actions and intel adapters behind the new contracts
+- [x] add one end-to-end mocked integration test through the new layer
 
 Suggested structure:
 
@@ -82,7 +82,7 @@ Definition of done:
 
 ## Phase 2: Policy lifecycle and governance
 
-Status: `Next`
+Status: `Complete for current slice`
 
 Goals:
 
@@ -91,21 +91,21 @@ Goals:
 
 Deliverables:
 
-- [ ] add policy metadata:
+- [x] add policy metadata:
 - `version`
 - `status`
 - `owner`
 - `change_reason`
 - `created_at`
-- [ ] add `dry_run` execution mode
-- [ ] add approval matrix by `action`, `risk_level`, and `asset_criticality`
-- [ ] add canary rollout controls:
+- [x] add `dry_run` execution mode
+- [x] add approval matrix by `action`, `risk_level`, and `asset_criticality`
+- [x] add canary rollout controls:
 - hostname pattern
 - asset tag
 - workspace or environment
 - percentage-based rollout
-- [ ] add rule test fixtures and replay command
-- [ ] store policy version on incident and action records
+- [x] add rule test fixtures and replay command
+- [x] store policy version on incident and action records
 
 Definition of done:
 
@@ -115,7 +115,7 @@ Definition of done:
 
 ## Phase 3: Incident correlation and deduplication
 
-Status: `Next`
+Status: `Complete for current slice`
 
 Goals:
 
@@ -124,29 +124,31 @@ Goals:
 
 Deliverables:
 
-- [ ] add correlation service
-- [ ] define fingerprints using:
+- [x] add correlation service
+- [x] define fingerprints using:
 - hostname
 - username
 - file hash
 - process name
 - destination IP
-- [ ] add configurable correlation windows such as `15m`, `1h`, `24h`
-- [ ] support outcomes:
+- [x] add configurable correlation windows such as `15m`, `1h`, `24h`
+- [x] support outcomes:
 - create new incident
 - attach alert to existing incident
 - reopen closed incident
-- [ ] add persistence for related alerts and correlation evidence
-- [ ] expose correlation details in API and dashboard
+- [x] add persistence for related alerts and correlation evidence
+- [x] expose correlation details in API and dashboard
+- [x] add regression coverage for grouped, reopened, and out-of-window alerts
 
 Definition of done:
 
 - repeated related alerts can consolidate into one incident
 - analysts can see why alerts were correlated
+- full `pytest` suite passes with correlation enabled
 
 ## Phase 4: Observability and operational safety
 
-Status: `Next`
+Status: `Complete for current slice`
 
 Goals:
 
@@ -155,26 +157,28 @@ Goals:
 
 Deliverables:
 
-- [ ] structured JSON logging with:
+- [x] structured JSON logging with:
 - `alert_id`
 - `incident_id`
 - `correlation_id`
 - `policy_version`
 - `provider`
-- [ ] metrics for:
+- [x] metrics for:
 - request rate and latency
 - action latency
 - queue depth
 - retry count
 - dead-letter count
 - approval backlog
-- [ ] tracing across:
+- [x] tracing across:
 - ingest
 - enrichment
 - policy evaluation
 - dispatch
 - worker execution
-- [ ] timeout, retry, rate-limit, and circuit breaker wrappers for downstream APIs
+- [x] timeout, retry, rate-limit, and circuit breaker wrappers for downstream APIs
+- [x] expose readiness and observability snapshots through API and dashboard runtime views
+- [x] add regression tests for readiness payloads, queue metrics, and downstream guard behavior
 
 Definition of done:
 
@@ -183,7 +187,7 @@ Definition of done:
 
 ## Phase 5: Human-in-the-loop workflow
 
-Status: `Later`
+Status: `Complete for current slice`
 
 Goals:
 
@@ -191,12 +195,12 @@ Goals:
 
 Deliverables:
 
-- [ ] approval SLA tracking
-- [ ] escalation path for overdue approvals
-- [ ] comment history and operator rationale
-- [ ] reopen and rollback workflow
-- [ ] chat or ticket synchronization hooks
-- [ ] append-only audit trail for approvals and case state changes
+- [x] approval SLA tracking
+- [x] escalation path for overdue approvals
+- [x] comment history and operator rationale
+- [x] reopen and rollback workflow
+- [x] chat or ticket synchronization hooks
+- [x] append-only audit trail for approvals and case state changes
 
 Definition of done:
 
@@ -205,7 +209,19 @@ Definition of done:
 
 ## Phase 6: Integration test strategy
 
-Status: `Later`
+Status: `Complete for current slice`
+
+Current slice:
+
+- sanitized source replay fixtures now cover Wazuh-like SIEM payloads and Microsoft Defender-like EDR payloads
+- local replay harness validates normalization, policy evaluation, and correlation without calling live vendors
+- connector sandbox tests now cover:
+- local action connector side effects
+- local ticketing JSON adapter
+- local ticketing webhook adapter
+- HTTP CMDB adapter
+- mock threat-intel adapter
+- dashboard Playwright smoke tests are present and passing for incident review and report access flows
 
 Goals:
 
@@ -213,11 +229,11 @@ Goals:
 
 Deliverables:
 
-- [ ] contract tests for inbound webhook payloads
-- [ ] sanitized replay datasets from SIEM and EDR sources
-- [ ] sandbox integration tests per vendor connector
-- [ ] deterministic replay tests for policy and correlation logic
-- [ ] browser smoke tests for analyst approval and incident review flows
+- [x] contract tests for inbound webhook payloads
+- [x] sanitized replay datasets from SIEM and EDR sources
+- [x] sandbox integration tests per vendor connector
+- [x] deterministic replay tests for policy and correlation logic
+- [x] browser smoke tests for analyst approval and incident review flows
 
 Definition of done:
 
@@ -226,7 +242,16 @@ Definition of done:
 
 ## Phase 7: Deployment and platform operations
 
-Status: `Later`
+Status: `In progress`
+
+Current slice:
+
+- Docker packaging exists for API, worker, and dashboard, with Compose manifests for both local build-based runs and GHCR image-based release rollouts
+- environment profiles under `config/environments/` are validated by test and CLI
+- CI now covers env validation, backend regression, frontend build, Compose rendering, and Docker image build steps
+- CD workflow exists for manual `staging` or `production` rollout over SSH using GitHub environment approvals and GHCR images
+- ordered Postgres migrations are packaged and executable from the repository or API image
+- local runtime image builds were not verified in this session because the Docker daemon was unavailable
 
 Goals:
 
@@ -234,11 +259,11 @@ Goals:
 
 Deliverables:
 
-- [ ] Docker images for API, worker, and dashboard
-- [ ] environment-specific config separation
-- [ ] CI pipeline for lint, test, build, and image publish
-- [ ] CD pipeline for staging and production rollout
-- [ ] Postgres migration workflow
+- [x] Docker images for API, worker, and dashboard
+- [x] environment-specific config separation
+- [x] CI pipeline for lint, test, build, and image publish
+- [x] CD pipeline for staging and production rollout
+- [x] Postgres migration workflow
 - [ ] IaC for runtime dependencies
 
 Definition of done:
@@ -248,7 +273,12 @@ Definition of done:
 
 ## Phase 8: Wazuh integration
 
-Status: `Later`
+Status: `Partial foundation done`
+
+Current slice:
+
+- `WazuhSourceConnector` exists for local normalization and replay coverage
+- sanitized Wazuh fixtures are bundled for deterministic offline validation
 
 Goals:
 
@@ -256,11 +286,11 @@ Goals:
 
 Deliverables:
 
-- [ ] build `WazuhSourceConnector`
+- [x] build `WazuhSourceConnector`
 - [ ] support webhook or polling ingest path
-- [ ] normalize Wazuh alerts into the canonical alert schema
+- [x] normalize Wazuh alerts into the canonical alert schema
 - [ ] map Wazuh rule metadata, MITRE fields, host context, and IOC fields
-- [ ] add sanitized Wazuh replay fixtures
+- [x] add sanitized Wazuh replay fixtures
 
 Definition of done:
 
@@ -277,10 +307,13 @@ Definition of done:
 
 ## First sprint backlog
 
-- [ ] scaffold `integrations/contracts.py`
-- [ ] scaffold `integrations/registry.py`
-- [ ] wrap current hash/IP intel implementations behind contracts
-- [ ] wrap current actions behind action connector contracts
-- [ ] add `dry_run` config path to policy execution
-- [ ] add structured logging helper
+- [x] scaffold `integrations/contracts.py`
+- [x] scaffold `integrations/registry.py`
+- [x] wrap current hash/IP intel implementations behind contracts
+- [x] wrap current actions behind action connector contracts
+- [x] add `dry_run` config path to policy execution
+- [x] add policy metadata/version snapshot to incident responses
+- [x] add approval matrix and canary rollout governance to policy execution
+- [x] add replayable policy fixture suite and command
+- [x] add structured logging helper
 - [ ] write a design note for correlation fingerprint rules

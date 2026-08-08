@@ -27,6 +27,7 @@ import yaml
 from engine.policy_engine import PolicyEngine
 from engine.policy_loader import DEFAULT_POLICY_CONFIG
 from schemas.alert import (
+    ActionResult,
     AssetCriticality,
     EnrichedAlert,
     HashEnrichment,
@@ -77,6 +78,7 @@ def make_enriched(
     ip_confidence: int = 0,
     ip_is_c2: bool = False,
     asset_criticality: AssetCriticality = AssetCriticality.NORMAL,
+    asset_info: dict | None = None,
     mitre_mappings: list = None,
     risk_score: float = 20.0,
     risk_level: str = "low",
@@ -100,10 +102,52 @@ def make_enriched(
             source="mock_test",
         ),
         asset_criticality=asset_criticality,
+        asset_info=asset_info or {},
         mitre_mappings=mitre_mappings or [],
         risk_score=risk_score,
         risk_level=risk_level,
     )
+
+
+class RecordingActionConnector:
+    def __init__(self) -> None:
+        self.isolations = []
+        self.kills = []
+        self.blocks = []
+        self.escalations = []
+        self.notifications = []
+
+    def isolate_host(self, **kwargs) -> ActionResult:
+        self.isolations.append(kwargs)
+        return ActionResult(action=ResponseAction.ISOLATE_HOST, status="succeeded", details="isolated")
+
+    def kill_process(self, **kwargs) -> ActionResult:
+        self.kills.append(kwargs)
+        return ActionResult(action=ResponseAction.KILL_PROCESS, status="succeeded", details="killed")
+
+    def block_ip(self, **kwargs) -> ActionResult:
+        self.blocks.append(kwargs)
+        return ActionResult(action=ResponseAction.BLOCK_IP, status="succeeded", details="blocked")
+
+    def escalate(self, **kwargs) -> ActionResult:
+        self.escalations.append(kwargs)
+        return ActionResult(action=ResponseAction.ESCALATE, status="succeeded", details="escalated")
+
+    def notify_soc(self, **kwargs) -> ActionResult:
+        self.notifications.append(kwargs)
+        return ActionResult(action=ResponseAction.NOTIFY_SOC, status="succeeded", details="notified")
+
+
+class RecordingTicketingConnector:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def create_ticket(self, **kwargs):
+        self.requests.append(kwargs)
+        return (
+            ActionResult(action=ResponseAction.CREATE_TICKET, status="succeeded", details="ticket created"),
+            "TICK-001",
+        )
 
 
 # Engine chạy silent (verbose=False) để output sạch trong pytest
@@ -446,6 +490,254 @@ def test_policy_reasoning_populated(engine):
     assert len(response.policy_reasoning) >= 4, (
         f"Phải có ít nhất 4 reasoning entries, got {len(response.policy_reasoning)}"
     )
+
+
+def test_policy_version_is_attached_to_incident_and_action_records(tmp_path):
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["version"] = 12
+    config_data["metadata"] = {
+        "version": 12,
+        "status": "active",
+        "owner": "soc.platform",
+        "change_reason": "Promote hardened baseline to production",
+        "created_at": "2026-08-08T10:00:00Z",
+    }
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    engine = PolicyEngine(verbose=False, policy_config_path=config_path)
+    alert = make_alert(severity=Severity.HIGH)
+    enriched = make_enriched(
+        alert,
+        hash_reputation=HashReputation.MALICIOUS,
+        hash_malicious_vendors=58,
+        hash_threat_name="Trojan.GenericKD.48756123",
+        risk_score=72.0,
+        risk_level="high",
+    )
+
+    response = engine.evaluate(enriched)
+
+    assert response.policy_version == 12
+    assert response.policy_metadata is not None
+    assert response.policy_metadata.owner == "soc.platform"
+    assert response.execution_trace.policy_version == 12
+    assert response.execution_trace.policy_status == "active"
+    assert all(result.policy_version == 12 for result in response.action_results)
+
+
+def test_dry_run_mode_simulates_actions_without_side_effects(tmp_path):
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["version"] = 3
+    config_data["metadata"] = {
+        "version": 3,
+        "status": "draft",
+        "owner": "soc.oncall",
+        "change_reason": "Validate policy changes without touching downstream systems",
+        "created_at": "2026-08-08T11:00:00Z",
+    }
+    config_data["execution"]["mode"] = "dry_run"
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    action_connector = RecordingActionConnector()
+    ticketing_connector = RecordingTicketingConnector()
+    engine = PolicyEngine(
+        verbose=False,
+        policy_config_path=config_path,
+        action_connector=action_connector,
+        ticketing_connector=ticketing_connector,
+    )
+    alert = make_alert(severity=Severity.HIGH)
+    enriched = make_enriched(
+        alert,
+        hash_reputation=HashReputation.MALICIOUS,
+        hash_malicious_vendors=58,
+        hash_threat_name="Trojan.GenericKD.48756123",
+        risk_score=72.0,
+        risk_level="high",
+    )
+
+    response = engine.evaluate(enriched)
+
+    assert ResponseAction.ISOLATE_HOST in response.triggered_actions
+    assert ResponseAction.CREATE_TICKET in response.triggered_actions
+    assert ResponseAction.NOTIFY_SOC in response.triggered_actions
+    assert response.ticket_id is None
+    assert response.execution_trace.configured_mode == "dry_run"
+    assert response.execution_trace.effective_mode == "dry_run"
+    assert response.execution_trace.policy_version == 3
+    assert response.execution_trace.policy_status == "draft"
+    assert response.policy_version == 3
+    assert response.policy_metadata is not None
+    assert response.policy_metadata.owner == "soc.oncall"
+    assert {result.action for result in response.action_results} == {
+        ResponseAction.ISOLATE_HOST,
+        ResponseAction.CREATE_TICKET,
+        ResponseAction.NOTIFY_SOC,
+    }
+    assert all(result.status == "skipped" for result in response.action_results)
+    assert all(result.policy_version == 3 for result in response.action_results)
+    assert all("Dry-run:" in result.details for result in response.action_results)
+    assert action_connector.isolations == []
+    assert action_connector.notifications == []
+    assert ticketing_connector.requests == []
+
+
+def test_sync_mode_approval_matrix_holds_action_for_analyst_review(tmp_path):
+    class MemoryPublisher:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def publish(self, request) -> None:
+            self.requests.append(request)
+
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["execution"]["approval"]["rules"] = [
+        {
+            "action": "isolate_host",
+            "risk_levels": ["high"],
+            "asset_criticalities": ["low"],
+            "reason": "Containment on low-tier endpoints still requires analyst review during pilot",
+        }
+    ]
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    publisher = MemoryPublisher()
+    action_connector = RecordingActionConnector()
+    ticketing_connector = RecordingTicketingConnector()
+    engine = PolicyEngine(
+        verbose=False,
+        policy_config_path=config_path,
+        queue_publisher=publisher,
+        action_connector=action_connector,
+        ticketing_connector=ticketing_connector,
+    )
+    alert = make_alert(severity=Severity.HIGH)
+    enriched = make_enriched(
+        alert,
+        hash_reputation=HashReputation.MALICIOUS,
+        hash_malicious_vendors=58,
+        hash_threat_name="Trojan.GenericKD.48756123",
+        asset_criticality=AssetCriticality.LOW,
+        risk_score=72.0,
+        risk_level="high",
+    )
+
+    response = engine.evaluate(enriched)
+
+    isolate_result = next(result for result in response.action_results if result.action == ResponseAction.ISOLATE_HOST)
+    assert isolate_result.status == "waiting_approval"
+    assert isolate_result.approval_reason == (
+        "Containment on low-tier endpoints still requires analyst review during pilot"
+    )
+    assert response.execution_trace.effective_mode == "sync_with_approval"
+    assert response.execution_trace.queue_name == "policy-actions"
+    assert response.execution_trace.queued_actions[0].approval_state == "pending"
+    assert len(publisher.requests) == 1
+    assert action_connector.isolations == []
+    assert len(ticketing_connector.requests) == 1
+
+
+def test_canary_rollout_skips_remediation_outside_scope_but_keeps_ticketing(tmp_path):
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["execution"]["canary"] = {
+        "enabled": True,
+        "hostname_patterns": ["SRV-*"],
+        "asset_tags": ["tier0"],
+        "environments": ["prod"],
+        "workspaces": ["hq"],
+        "percentage": 100,
+    }
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    action_connector = RecordingActionConnector()
+    ticketing_connector = RecordingTicketingConnector()
+    engine = PolicyEngine(
+        verbose=False,
+        policy_config_path=config_path,
+        action_connector=action_connector,
+        ticketing_connector=ticketing_connector,
+    )
+    alert = make_alert(hostname="DESKTOP-ABC123", severity=Severity.HIGH)
+    enriched = make_enriched(
+        alert,
+        hash_reputation=HashReputation.MALICIOUS,
+        hash_malicious_vendors=58,
+        hash_threat_name="Trojan.GenericKD.48756123",
+        asset_criticality=AssetCriticality.LOW,
+        asset_info={
+            "tags": ["general-user"],
+            "environment": "dev",
+            "workspace": "branch-office",
+        },
+        risk_score=72.0,
+        risk_level="high",
+    )
+
+    response = engine.evaluate(enriched)
+
+    isolate_result = next(result for result in response.action_results if result.action == ResponseAction.ISOLATE_HOST)
+    assert isolate_result.status == "skipped"
+    assert "Canary rollout blocked 'isolate_host'" in isolate_result.details
+    assert response.execution_trace.effective_mode == "sync_canary_skip"
+    assert response.execution_trace.canary_enabled is True
+    assert response.execution_trace.canary_targeted is False
+    assert response.execution_trace.canary_percentage == 100
+    assert response.execution_trace.canary_reason is not None
+    assert any("Canary rollout [SKIP]" in reason for reason in response.policy_reasoning)
+    assert action_connector.isolations == []
+    assert len(action_connector.notifications) == 1
+    assert len(ticketing_connector.requests) == 1
+
+
+def test_queue_mode_approval_matrix_marks_action_waiting_approval_without_env_override(tmp_path):
+    class MemoryPublisher:
+        def __init__(self) -> None:
+            self.requests = []
+
+        def publish(self, request) -> None:
+            self.requests.append(request)
+
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["execution"]["mode"] = "queued"
+    config_data["execution"]["approval"]["rules"] = [
+        {
+            "action": "isolate_host",
+            "risk_levels": ["high"],
+            "asset_criticalities": ["low"],
+            "reason": "Queued containment requires review during governance rollout",
+        }
+    ]
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+
+    publisher = MemoryPublisher()
+    engine = PolicyEngine(
+        verbose=False,
+        policy_config_path=config_path,
+        queue_publisher=publisher,
+    )
+    alert = make_alert(severity=Severity.HIGH)
+    enriched = make_enriched(
+        alert,
+        hash_reputation=HashReputation.MALICIOUS,
+        hash_malicious_vendors=58,
+        hash_threat_name="Trojan.GenericKD.48756123",
+        asset_criticality=AssetCriticality.LOW,
+        risk_score=72.0,
+        risk_level="high",
+    )
+
+    response = engine.evaluate(enriched)
+
+    isolate_result = next(result for result in response.action_results if result.action == ResponseAction.ISOLATE_HOST)
+    assert isolate_result.status == "waiting_approval"
+    assert isolate_result.approval_reason == "Queued containment requires review during governance rollout"
+    assert publisher.requests[0].requires_approval is True
+    assert publisher.requests[0].approval_state == "pending"
 
 
 def test_policy_config_can_disable_specific_rule(tmp_path):

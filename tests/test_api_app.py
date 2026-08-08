@@ -1,12 +1,17 @@
 import api.app as api_app
 import pytest
+import sqlite3
 import yaml
+from datetime import timedelta
 from alert_generator.generator import generate_alert
+from observability import observability
 from api.schemas import (
     ActionApprovalRequest,
+    ActionRollbackRequest,
     BulkIncidentUpdateRequest,
     IncidentCaseUpdateRequest,
     IncidentNoteCreateRequest,
+    IncidentReopenRequest,
     ProcessAlertRequest,
     ProcessScenarioRequest,
     SavedFilterCreateRequest,
@@ -19,10 +24,58 @@ from services.workflow_service import SoarWorkflowService
 from storage.sqlite_repository import SQLiteIncidentRepository
 
 
+def _counter_value(name: str, **labels: str) -> float:
+    snapshot = observability.snapshot()
+    for counter in snapshot["metrics"]["counters"]:
+        if counter["name"] != name:
+            continue
+        if all(counter["labels"].get(key) == str(value) for key, value in labels.items()):
+            return float(counter["value"])
+    return 0.0
+
+
+def _clone_alert(alert, *, alert_id: str, minutes_offset: int):
+    return alert.model_copy(
+        update={
+            "alert_id": alert_id,
+            "received_at": alert.received_at + timedelta(minutes=minutes_offset),
+        }
+    )
+
+
+def _build_queued_test_service(tmp_path):
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["execution"]["mode"] = "queued"
+    config_data["execution"]["approval"]["default_sla_minutes"] = 5
+    config_data["execution"]["approval"]["default_escalation_minutes"] = 10
+    config_data["execution"]["approval"]["default_escalation_targets"] = ["soc.lead", "irt.manager"]
+    config_data["execution"]["approval"]["rules"] = [
+        {
+            "action": "isolate_host",
+            "risk_levels": ["high", "critical"],
+            "reason": "Critical isolation requires approval",
+        }
+    ]
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+    repository = SQLiteIncidentRepository(tmp_path / "soar.db")
+    publisher = RepositoryQueuePublisher(repository)
+    return SoarWorkflowService(
+        verbose=False,
+        repository=repository,
+        policy_engine=PolicyEngine(
+            verbose=False,
+            policy_config_path=config_path,
+            queue_publisher=publisher,
+        ),
+    )
+
+
 def test_health_endpoint_returns_ok():
     payload = api_app.health()
 
     assert payload["status"] == "ok"
+    assert _counter_value("api.requests_total", route_name="health", status="ok") == 1.0
 
 
 def test_dashboard_bootstrap_returns_sample_metadata_and_default_json(incident_operator_principal):
@@ -210,6 +263,50 @@ def test_get_incident_by_ticket_id_returns_persisted_record(tmp_path, monkeypatc
     assert incident.ticket_id == response.response.ticket_id
     assert incident.report.html_path is None
     assert incident.response.enriched_alert.original_alert.command_line == "[redacted]"
+
+
+def test_api_incident_detail_exposes_correlation_fields_for_grouped_alerts(
+    tmp_path,
+    monkeypatch,
+    incident_operator_principal,
+):
+    test_service = SoarWorkflowService(
+        verbose=False,
+        db_path=tmp_path / "soar.db",
+    )
+    monkeypatch.setattr(api_app, "get_workflow_service", lambda: test_service)
+
+    first_alert = generate_alert(scenario="mixed", seed=9191)
+    second_alert = _clone_alert(first_alert, alert_id=f"{first_alert.alert_id}-api", minutes_offset=8)
+
+    api_app.process_incident(
+        ProcessAlertRequest(
+            alert=first_alert,
+            generate_report=False,
+            export_pdf=False,
+        ),
+        principal=incident_operator_principal,
+    )
+    api_app.process_incident(
+        ProcessAlertRequest(
+            alert=second_alert,
+            generate_report=False,
+            export_pdf=False,
+        ),
+        principal=incident_operator_principal,
+    )
+
+    incident = api_app.get_incident_by_alert_id(
+        second_alert.alert_id,
+        principal=incident_operator_principal,
+    )
+    summaries = api_app.list_incidents(limit=10, principal=incident_operator_principal)
+
+    assert incident.latest_alert_id == second_alert.alert_id
+    assert incident.related_alert_count == 2
+    assert set(incident.related_alert_ids) == {first_alert.alert_id, second_alert.alert_id}
+    assert incident.response.correlation_trace.outcome.value == "attached_to_existing"
+    assert summaries[0].related_alert_count == 2
 
 
 def test_get_incident_report_html_returns_generated_artifact(
@@ -498,6 +595,12 @@ def test_bulk_update_and_readiness_endpoints(tmp_path, monkeypatch, incident_ope
     assert readiness.status in {"ready", "degraded"}
     assert any(dep.name == "incident_repository" for dep in readiness.dependencies)
     assert "total_jobs" in readiness.queue_metrics
+    assert "metrics" in readiness.observability
+    assert "traces" in readiness.observability
+
+    snapshot = api_app.observability_snapshot(principal=incident_operator_principal)
+    assert "metrics" in snapshot
+    assert "structured_log_path" in snapshot
 
 
 def test_approve_and_reject_action_endpoints(tmp_path, monkeypatch, incident_operator_principal):
@@ -627,3 +730,92 @@ def test_approval_endpoints_reject_invalid_state_transitions(tmp_path, monkeypat
 
     assert excinfo.value.status_code == 409
     assert "cannot be approved from status 'rejected'" in str(excinfo.value.detail)
+
+
+def test_rollback_reopen_and_escalation_endpoints(tmp_path, monkeypatch, incident_operator_principal):
+    test_service = _build_queued_test_service(tmp_path)
+    monkeypatch.setattr(api_app, "get_workflow_service", lambda: test_service)
+
+    rollback_alert = generate_alert(scenario="malicious_hash", seed=9797)
+    api_app.process_incident(
+        ProcessAlertRequest(
+            alert=rollback_alert,
+            generate_report=False,
+            export_pdf=False,
+        ),
+        principal=incident_operator_principal,
+    )
+    rollback_incident = api_app.get_incident_by_alert_id(
+        rollback_alert.alert_id,
+        include_sensitive=True,
+        principal=incident_operator_principal,
+    )
+    rollback_target = next(action for action in rollback_incident.action_results if action.action == "isolate_host")
+
+    rolled_back = api_app.rollback_action(
+        rollback_alert.alert_id,
+        rollback_target.correlation_id,
+        ActionRollbackRequest(actor="incident-operator", comment="Cancel before execution"),
+        principal=incident_operator_principal,
+    )
+    rolled_back_action = next(action for action in rolled_back.action_results if action.action == "isolate_host")
+    assert rolled_back_action.status == "skipped"
+    assert rolled_back_action.rollback_requested_by == "incident-operator"
+
+    reopened = api_app.update_incident_case(
+        rollback_alert.alert_id,
+        IncidentCaseUpdateRequest(case_status="closed", comment="Case closed after rollback"),
+        principal=incident_operator_principal,
+    )
+    assert reopened.case_status == "closed"
+
+    reopened = api_app.reopen_incident(
+        rollback_alert.alert_id,
+        IncidentReopenRequest(comment="Need another analyst pass"),
+        principal=incident_operator_principal,
+    )
+    assert reopened.case_status == "in_progress"
+
+    escalation_alert = generate_alert(scenario="malicious_hash", seed=9898)
+    api_app.process_incident(
+        ProcessAlertRequest(
+            alert=escalation_alert,
+            generate_report=False,
+            export_pdf=False,
+        ),
+        principal=incident_operator_principal,
+    )
+    repository = test_service._repository
+    with sqlite3.connect(test_service.db_path) as conn:
+        escalation_target = conn.execute(
+            """
+            SELECT correlation_id
+            FROM queue_jobs
+            WHERE alert_id = ?
+              AND action = 'isolate_host'
+              AND status = 'waiting_approval'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (escalation_alert.alert_id,),
+        ).fetchone()
+        assert escalation_target is not None
+        conn.execute(
+            """
+            UPDATE queue_jobs
+            SET approval_due_at = '2026-01-01T00:00:00+00:00',
+                approval_escalates_at = '2026-01-01T00:05:00+00:00'
+            WHERE correlation_id = ?
+            """,
+            (escalation_target[0],),
+        )
+        conn.commit()
+
+    escalated = api_app.escalate_overdue_approvals(principal=incident_operator_principal)
+    escalated_action = next(
+        action
+        for incident in escalated
+        for action in incident.action_results
+        if action.action == "isolate_host" and action.approval_escalated_at is not None
+    )
+    assert escalated_action.approval_escalated_at is not None

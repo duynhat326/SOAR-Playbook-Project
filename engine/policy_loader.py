@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import os
 from enum import Enum
 from pathlib import Path
@@ -9,14 +10,59 @@ import yaml
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from schemas.alert import ResponseAction, Severity
+from schemas.alert import AssetCriticality, PolicyStatus, ResponseAction, Severity
+from time_utils import utc_now
 
 DEFAULT_POLICY_PATH = Path(__file__).resolve().parent.parent / "policies" / "response_rules.yaml"
 
 DEFAULT_POLICY_CONFIG: dict[str, Any] = {
     "version": 1,
+    "metadata": {
+        "version": 1,
+        "status": "active",
+        "owner": "soc.platform",
+        "change_reason": "Initial production hardening baseline",
+        "created_at": "2026-08-08T00:00:00Z",
+    },
+    "correlation": {
+        "enabled": True,
+        "window": "1h",
+        "reopen_closed_incidents": True,
+        "strategies": [
+            {
+                "name": "host_user_hash",
+                "fields": ["hostname", "username", "file_hash"],
+            },
+            {
+                "name": "host_user_process",
+                "fields": ["hostname", "username", "process_name"],
+            },
+            {
+                "name": "host_destination_ip",
+                "fields": ["hostname", "destination_ip"],
+            },
+            {
+                "name": "user_file_hash",
+                "fields": ["username", "file_hash"],
+            },
+        ],
+    },
     "execution": {
         "mode": "sync",
+        "approval": {
+            "default_sla_minutes": 30,
+            "default_escalation_minutes": 60,
+            "default_escalation_targets": [],
+            "rules": [],
+        },
+        "canary": {
+            "enabled": False,
+            "hostname_patterns": [],
+            "asset_tags": [],
+            "environments": [],
+            "workspaces": [],
+            "percentage": 100,
+        },
         "queue": {
             "queue_name": "policy-actions",
             "correlation_prefix": "policy",
@@ -106,12 +152,21 @@ class PolicyConditionType(str, Enum):
 class PolicyExecutionMode(str, Enum):
     SYNC = "sync"
     QUEUED = "queued"
+    DRY_RUN = "dry_run"
 
 
 class PolicyCorrelationField(str, Enum):
     HOSTNAME = "hostname"
     USERNAME = "username"
     FILE_HASH = "file_hash"
+    DESTINATION_IP = "destination_ip"
+
+
+class PolicyFingerprintField(str, Enum):
+    HOSTNAME = "hostname"
+    USERNAME = "username"
+    FILE_HASH = "file_hash"
+    PROCESS_NAME = "process_name"
     DESTINATION_IP = "destination_ip"
 
 
@@ -163,7 +218,142 @@ class PolicyExecutionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: PolicyExecutionMode = PolicyExecutionMode.SYNC
+    approval: "PolicyApprovalConfig" = Field(default_factory=lambda: PolicyApprovalConfig())
+    canary: "PolicyCanaryConfig" = Field(default_factory=lambda: PolicyCanaryConfig())
     queue: PolicyQueueConfig = Field(default_factory=PolicyQueueConfig)
+
+
+class PolicyApprovalRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: ResponseAction
+    risk_levels: list[Severity] = Field(default_factory=list)
+    asset_criticalities: list[AssetCriticality] = Field(default_factory=list)
+    reason: Optional[str] = None
+    sla_minutes: Optional[int] = Field(default=None, ge=1, le=10080)
+    escalation_minutes: Optional[int] = Field(default=None, ge=1, le=20160)
+    escalation_targets: list[str] = Field(default_factory=list)
+
+    @field_validator("risk_levels", "asset_criticalities")
+    @classmethod
+    def validate_unique_enums(cls, values: list[Any]) -> list[Any]:
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for value in values:
+            candidate = value.value if isinstance(value, Enum) else str(value)
+            if candidate in seen:
+                duplicates.add(candidate)
+            seen.add(candidate)
+        if duplicates:
+            duplicate_list = ", ".join(sorted(duplicates))
+            raise ValueError(f"Duplicate approval rule values are not allowed: {duplicate_list}")
+        return values
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Approval rule reason must not be empty")
+        return normalized
+
+    @field_validator("escalation_targets")
+    @classmethod
+    def validate_escalation_targets(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for value in values:
+            candidate = value.strip()
+            if not candidate:
+                raise ValueError("Escalation target values must not be empty")
+            lowered = candidate.casefold()
+            if lowered in seen:
+                duplicates.add(candidate)
+            seen.add(lowered)
+            normalized.append(candidate)
+        if duplicates:
+            duplicate_list = ", ".join(sorted(duplicates))
+            raise ValueError(f"Duplicate escalation target values are not allowed: {duplicate_list}")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_escalation_thresholds(self) -> "PolicyApprovalRule":
+        if (
+            self.sla_minutes is not None
+            and self.escalation_minutes is not None
+            and self.escalation_minutes < self.sla_minutes
+        ):
+            raise ValueError("Approval rule escalation_minutes must be greater than or equal to sla_minutes")
+        return self
+
+
+class PolicyApprovalConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    default_sla_minutes: int = Field(default=30, ge=1, le=10080)
+    default_escalation_minutes: int = Field(default=60, ge=1, le=20160)
+    default_escalation_targets: list[str] = Field(default_factory=list)
+    rules: list[PolicyApprovalRule] = Field(default_factory=list)
+
+    @field_validator("default_escalation_targets")
+    @classmethod
+    def validate_default_escalation_targets(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for value in values:
+            candidate = value.strip()
+            if not candidate:
+                raise ValueError("Default escalation target values must not be empty")
+            lowered = candidate.casefold()
+            if lowered in seen:
+                duplicates.add(candidate)
+            seen.add(lowered)
+            normalized.append(candidate)
+        if duplicates:
+            duplicate_list = ", ".join(sorted(duplicates))
+            raise ValueError(f"Duplicate default escalation target values are not allowed: {duplicate_list}")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_default_escalation_minutes(self) -> "PolicyApprovalConfig":
+        if self.default_escalation_minutes < self.default_sla_minutes:
+            raise ValueError("default_escalation_minutes must be greater than or equal to default_sla_minutes")
+        return self
+
+
+class PolicyCanaryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    hostname_patterns: list[str] = Field(default_factory=list)
+    asset_tags: list[str] = Field(default_factory=list)
+    environments: list[str] = Field(default_factory=list)
+    workspaces: list[str] = Field(default_factory=list)
+    percentage: int = Field(default=100, ge=0, le=100)
+
+    @field_validator("hostname_patterns", "asset_tags", "environments", "workspaces")
+    @classmethod
+    def validate_selector_values(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for value in values:
+            candidate = value.strip()
+            if not candidate:
+                raise ValueError("Canary selector values must not be empty")
+            lowered = candidate.casefold()
+            if lowered in seen:
+                duplicates.add(candidate)
+            seen.add(lowered)
+            normalized.append(candidate)
+        if duplicates:
+            duplicate_list = ", ".join(sorted(duplicates))
+            raise ValueError(f"Duplicate canary selector values are not allowed: {duplicate_list}")
+        return normalized
 
 
 class PolicyThresholds(BaseModel):
@@ -211,6 +401,77 @@ class PolicyMessages(BaseModel):
     disabled: Optional[str] = None
 
 
+class PolicyCorrelationStrategy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    fields: list[PolicyFingerprintField]
+
+    @field_validator("name")
+    @classmethod
+    def validate_strategy_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Correlation strategy name must not be empty")
+        return normalized
+
+    @field_validator("fields")
+    @classmethod
+    def validate_fields(cls, values: list[PolicyFingerprintField]) -> list[PolicyFingerprintField]:
+        if not values:
+            raise ValueError("Correlation strategy must declare at least one field")
+        seen: set[PolicyFingerprintField] = set()
+        duplicates: set[str] = set()
+        for value in values:
+            if value in seen:
+                duplicates.add(value.value)
+            seen.add(value)
+        if duplicates:
+            duplicate_list = ", ".join(sorted(duplicates))
+            raise ValueError(f"Duplicate correlation strategy fields are not allowed: {duplicate_list}")
+        return values
+
+
+class PolicyIncidentCorrelationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    window: str = "1h"
+    reopen_closed_incidents: bool = True
+    strategies: list[PolicyCorrelationStrategy] = Field(default_factory=list)
+
+    @field_validator("window")
+    @classmethod
+    def validate_window(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("Correlation window must not be empty")
+        if normalized[-1:] not in {"m", "h", "d"} or not normalized[:-1].isdigit():
+            raise ValueError("Correlation window must use a positive duration such as '15m', '1h', or '24h'")
+        amount = int(normalized[:-1])
+        if amount <= 0:
+            raise ValueError("Correlation window must be greater than zero")
+        return normalized
+
+
+class PolicyMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(default=1, ge=1)
+    status: PolicyStatus = PolicyStatus.ACTIVE
+    owner: str = "soc.platform"
+    change_reason: str = "Baseline response policy"
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("owner", "change_reason")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Policy metadata values must not be empty")
+        return normalized
+
+
 class PolicyRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -242,9 +503,31 @@ class PolicyRule(BaseModel):
 class PolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: int = 1
+    version: int = Field(default=1, ge=1)
+    metadata: PolicyMetadata = Field(default_factory=PolicyMetadata)
+    correlation: PolicyIncidentCorrelationConfig = Field(default_factory=PolicyIncidentCorrelationConfig)
     execution: PolicyExecutionConfig = Field(default_factory=PolicyExecutionConfig)
     rules: list[PolicyRule]
+
+    @model_validator(mode="before")
+    @classmethod
+    def backfill_metadata(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        version = normalized.get("version", 1)
+        metadata = normalized.get("metadata")
+
+        if metadata is None:
+            normalized["metadata"] = {"version": version}
+            return normalized
+
+        if isinstance(metadata, dict) and "version" not in metadata:
+            merged = dict(metadata)
+            merged["version"] = version
+            normalized["metadata"] = merged
+        return normalized
 
     @model_validator(mode="after")
     def validate_rules(self) -> "PolicyConfig":
@@ -260,6 +543,8 @@ class PolicyConfig(BaseModel):
         if duplicates:
             duplicate_list = ", ".join(sorted(duplicates))
             raise ValueError(f"Duplicate rule_id values are not allowed: {duplicate_list}")
+        if self.metadata.version != self.version:
+            raise ValueError("Policy metadata.version must match the top-level version")
         return self
 
 

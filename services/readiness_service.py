@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from env_utils import load_local_env_files
+from observability import observability
 
 
 def build_readiness_report(*, repository: Any) -> dict[str, Any]:
@@ -126,6 +127,25 @@ def build_readiness_report(*, repository: Any) -> dict[str, Any]:
         )
 
     queue_metrics = repository.get_queue_metrics() if hasattr(repository, "get_queue_metrics") else {}
+    observability.metrics.set_gauge("queue.total_jobs", float(queue_metrics.get("total_jobs") or 0))
+    observability.metrics.set_gauge("queue.queued_jobs", float(queue_metrics.get("queued_jobs") or 0))
+    observability.metrics.set_gauge(
+        "queue.waiting_approval_jobs",
+        float(queue_metrics.get("waiting_approval_jobs") or 0),
+    )
+    observability.metrics.set_gauge("queue.running_jobs", float(queue_metrics.get("running_jobs") or 0))
+    observability.metrics.set_gauge(
+        "queue.retry_pending_jobs",
+        float(queue_metrics.get("retry_pending_jobs") or 0),
+    )
+    observability.metrics.set_gauge(
+        "queue.dead_letter_jobs",
+        float(queue_metrics.get("dead_letter_jobs") or 0),
+    )
+    observability.metrics.set_gauge(
+        "queue.rejected_jobs",
+        float(queue_metrics.get("rejected_jobs") or 0),
+    )
     dependencies.append(
         {
             "name": "remediation_queue",
@@ -145,4 +165,5 @@ def build_readiness_report(*, repository: Any) -> dict[str, Any]:
         "status": overall_status,
         "dependencies": dependencies,
         "queue_metrics": queue_metrics,
+        "observability": observability.snapshot(),
     }
