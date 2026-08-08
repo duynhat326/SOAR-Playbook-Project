@@ -7,9 +7,6 @@ import pytest
 
 import api.app as api_app
 from security import (
-    ROLE_A2A_ADMIN,
-    ROLE_A2A_AGENT,
-    ROLE_A2A_READ,
     ROLE_INCIDENT_PROCESS,
     ROLE_INCIDENT_READ,
     AuthenticatedPrincipal,
@@ -22,18 +19,15 @@ def isolate_test_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     # Keep tests deterministic even when local .env files enable live services.
     monkeypatch.setenv("SOAR_INTEL_PROVIDER", "mock")
     monkeypatch.setenv("SUPABASE_DB_URL", "")
-    monkeypatch.setenv("SOAR_A2A_DB_URL", "")
     monkeypatch.setenv("VIRUSTOTAL_API_KEY", "")
 
 
 @pytest.fixture(autouse=True)
 def clear_cached_services() -> Iterator[None]:
     api_app.get_workflow_service.cache_clear()
-    api_app.get_a2a_service.cache_clear()
     clear_auth_cache()
     yield
     api_app.get_workflow_service.cache_clear()
-    api_app.get_a2a_service.cache_clear()
     clear_auth_cache()
 
 
@@ -67,14 +61,6 @@ def incident_operator_principal(principal_factory: Callable[..., AuthenticatedPr
 
 
 @pytest.fixture
-def a2a_admin_principal(principal_factory: Callable[..., AuthenticatedPrincipal]) -> AuthenticatedPrincipal:
-    return principal_factory(
-        "a2a-admin",
-        roles=[ROLE_A2A_ADMIN, ROLE_A2A_READ],
-    )
-
-
-@pytest.fixture
 def auth_token_config_factory(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[dict]], str]:
     def install(tokens: list[dict]) -> str:
         payload = json.dumps({"tokens": tokens})
@@ -100,36 +86,5 @@ def build_default_auth_tokens() -> list[dict]:
             "principal_type": "user",
             "roles": [ROLE_INCIDENT_READ],
             "workspaces": ["*"],
-        },
-        {
-            "token": "a2a-admin-token",
-            "principal_id": "a2a-admin",
-            "principal_type": "user",
-            "roles": [ROLE_A2A_ADMIN, ROLE_A2A_READ],
-            "workspaces": ["*"],
-        },
-        {
-            "token": "leader-agent-token",
-            "principal_id": "leader-agent",
-            "principal_type": "agent",
-            "roles": [ROLE_A2A_AGENT],
-            "workspaces": ["triage-room", "pentest-room", "soc-war-room", "shared"],
-            "agent_id": "leader-agent",
-        },
-        {
-            "token": "worker-agent-token",
-            "principal_id": "worker-agent",
-            "principal_type": "agent",
-            "roles": [ROLE_A2A_AGENT],
-            "workspaces": ["triage-room", "pentest-room", "soc-war-room", "shared"],
-            "agent_id": "worker-agent",
-        },
-        {
-            "token": "ghost-agent-token",
-            "principal_id": "ghost-agent",
-            "principal_type": "agent",
-            "roles": [ROLE_A2A_AGENT],
-            "workspaces": ["triage-room", "pentest-room", "soc-war-room", "shared"],
-            "agent_id": "ghost-agent",
         },
     ]

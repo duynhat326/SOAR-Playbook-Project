@@ -11,23 +11,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from alert_generator.generator import generate_alert
-from a2a.schemas import (
-    AgentHeartbeatRequest,
-    AgentRecord,
-    AgentRegistrationRequest,
-    ArtifactCreateRequest,
-    ArtifactRecord,
-    MessageCreateRequest,
-    MessageRecord,
-    TaskClaimRequest,
-    TaskCompleteRequest,
-    TaskCreateRequest,
-    TaskRecord,
-    TimelineEvent,
-    WorkspaceCreateRequest,
-    WorkspaceRecord,
-)
-from a2a.service import A2AService
 from api.schemas import (
     ActionApprovalRequest,
     BulkIncidentUpdateRequest,
@@ -48,9 +31,6 @@ from api.schemas import (
 )
 from env_utils import load_local_env_files
 from security import (
-    ROLE_A2A_ADMIN,
-    ROLE_A2A_AGENT,
-    ROLE_A2A_READ,
     ROLE_INCIDENT_PROCESS,
     ROLE_INCIDENT_READ,
     AuthenticatedPrincipal,
@@ -196,11 +176,6 @@ def _resolve_incident_html_report_path(incident: dict[str, Any]) -> Path:
 @lru_cache
 def get_workflow_service() -> SoarWorkflowService:
     return SoarWorkflowService(verbose=False)
-
-
-@lru_cache
-def get_a2a_service() -> A2AService:
-    return A2AService()
 
 
 @lru_cache
@@ -505,187 +480,3 @@ def get_incident_by_ticket_id(
         principal=principal,
         include_sensitive=include_sensitive,
     )
-
-
-@app.get("/api/v1/a2a/health")
-def a2a_health(
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_READ, ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> dict[str, str]:
-    principal = _require_bound_principal(principal)
-    return {
-        "status": "ok",
-        "service": "soar-a2a-bus",
-        "version": app.version,
-    }
-
-
-@app.post("/api/v1/a2a/workspaces", response_model=WorkspaceRecord)
-def ensure_workspace(
-    request: WorkspaceCreateRequest,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_ADMIN)),
-) -> WorkspaceRecord:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().ensure_workspace(request, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-
-@app.post("/api/v1/a2a/agents/register", response_model=AgentRecord)
-def register_agent(
-    request: AgentRegistrationRequest,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_ADMIN)),
-) -> AgentRecord:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().register_agent(request, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-
-@app.post("/api/v1/a2a/agents/{agent_id}/heartbeat", response_model=AgentRecord)
-def heartbeat_agent(
-    agent_id: str,
-    request: AgentHeartbeatRequest,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> AgentRecord:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().heartbeat_agent(agent_id, request.status, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.get("/api/v1/a2a/agents", response_model=list[AgentRecord])
-def list_agents(
-    workspace: str,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_READ, ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> list[AgentRecord]:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().list_agents(workspace, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-
-@app.post("/api/v1/a2a/tasks", response_model=TaskRecord)
-def create_task(
-    request: TaskCreateRequest,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> TaskRecord:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().create_task(request, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.get("/api/v1/a2a/tasks", response_model=list[TaskRecord])
-def list_tasks(
-    workspace: str,
-    status: Optional[str] = None,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_READ, ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> list[TaskRecord]:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().list_tasks(workspace, status, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-
-@app.post("/api/v1/a2a/tasks/{task_id}/claim", response_model=TaskRecord)
-def claim_task(
-    task_id: str,
-    request: TaskClaimRequest,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> TaskRecord:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().claim_task(task_id, request, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.post("/api/v1/a2a/tasks/{task_id}/complete", response_model=TaskRecord)
-def complete_task(
-    task_id: str,
-    request: TaskCompleteRequest,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> TaskRecord:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().complete_task(task_id, request, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.post("/api/v1/a2a/messages", response_model=MessageRecord)
-def post_message(
-    request: MessageCreateRequest,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> MessageRecord:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().post_message(request, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.get("/api/v1/a2a/messages", response_model=list[MessageRecord])
-def poll_messages(
-    workspace: str,
-    agent_id: str,
-    limit: int = 20,
-    after: Optional[str] = None,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> list[MessageRecord]:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().poll_messages(
-            workspace=workspace,
-            agent_id=agent_id,
-            limit=limit,
-            after=after,
-            principal=principal,
-        )
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@app.post("/api/v1/a2a/artifacts", response_model=ArtifactRecord)
-def publish_artifact(
-    request: ArtifactCreateRequest,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> ArtifactRecord:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().publish_artifact(request, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.get("/api/v1/a2a/timeline", response_model=list[TimelineEvent])
-def timeline(
-    workspace: str,
-    limit: int = 50,
-    principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_A2A_READ, ROLE_A2A_AGENT, ROLE_A2A_ADMIN)),
-) -> list[TimelineEvent]:
-    principal = _require_bound_principal(principal)
-    try:
-        return get_a2a_service().timeline(workspace, limit, principal=principal)
-    except AuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc

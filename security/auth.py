@@ -13,9 +13,6 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 ROLE_INCIDENT_PROCESS = "incident_process"
 ROLE_INCIDENT_READ = "incident_read"
-ROLE_A2A_ADMIN = "a2a_admin"
-ROLE_A2A_READ = "a2a_read"
-ROLE_A2A_AGENT = "a2a_agent"
 
 PrincipalType = Literal["user", "agent"]
 
@@ -50,9 +47,6 @@ class AuthenticatedPrincipal:
     def has_role(self, role: str) -> bool:
         return role in self.roles
 
-    def can_access_workspace(self, workspace: str) -> bool:
-        return "*" in self.workspaces or workspace in self.workspaces or self.has_role(ROLE_A2A_ADMIN)
-
 
 class AuthConfigurationError(RuntimeError):
     pass
@@ -70,7 +64,7 @@ def _load_token_map() -> dict[str, AuthenticatedPrincipal]:
     raw = os.getenv("SOAR_AUTH_TOKENS_JSON")
     if not raw:
         raise AuthConfigurationError(
-            "SOAR_AUTH_TOKENS_JSON is not configured. Protected API and A2A operations are disabled until auth tokens are configured."
+            "SOAR_AUTH_TOKENS_JSON is not configured. Protected API operations are disabled until auth tokens are configured."
         )
 
     try:
@@ -125,16 +119,6 @@ def ensure_roles(principal: AuthenticatedPrincipal, *roles: str) -> Authenticate
     if roles and not any(principal.has_role(role) for role in roles):
         raise AuthorizationError("Authenticated principal lacks the required role.")
     return principal
-
-
-def ensure_workspace_access(principal: AuthenticatedPrincipal, workspace: str) -> None:
-    if not principal.can_access_workspace(workspace):
-        raise AuthorizationError(f"Principal is not authorized for workspace '{workspace}'.")
-
-
-def ensure_agent_binding(principal: AuthenticatedPrincipal, agent_id: str) -> None:
-    if principal.principal_type != "agent" or principal.agent_id != agent_id:
-        raise AuthorizationError("Authenticated agent identity does not match the requested agent_id.")
 
 
 def _http_auth_error(status_code: int, detail: str) -> HTTPException:

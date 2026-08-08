@@ -8,7 +8,7 @@
 ![React](https://img.shields.io/badge/React-Primary%20Dashboard-61DAFB?style=for-the-badge&logo=react&logoColor=0B1020)
 ![Supabase](https://img.shields.io/badge/Supabase-Postgres%20Persistence-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
 ![VirusTotal](https://img.shields.io/badge/VirusTotal-Live%20Hash%20Intel-394EFF?style=for-the-badge)
-![pytest](https://img.shields.io/badge/pytest-63%20tests%20passing-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-70%20tests%20passing-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
 ![Security](https://img.shields.io/badge/RBAC-Enabled-8B5CF6?style=for-the-badge)
 
 **Blue Team CV Project for SOC analyst workflow automation**
@@ -67,9 +67,8 @@ The current repo is already beyond a local-only demo. The following areas are wo
 - Queue-ready execution trace and correlation metadata
 - Idempotent replay for repeated `alert_id` processing
 - Report artifact storage for Markdown, HTML, and optional PDF
-- A2A collaboration bus for multi-agent workflows
-- RBAC-protected incident and A2A APIs
-- Security regression coverage for auth, redaction, spoofing, and HTML report escaping
+- RBAC-protected incident APIs
+- Security regression coverage for auth, redaction, and HTML report escaping
 
 Recent dashboard improvements completed in this repo:
 
@@ -191,10 +190,9 @@ The incident, action results, and report metadata are stored so the analyst can 
 |                                  |                           | storage/sqlite_        |
 |                                  |                           | repository.py          |
 +----------------------------------+---------------------------+------------------------+
-| Security and collaboration                                                            |
+| Security                                                                              |
 |                                                                                      |
 | security/auth.py                 RBAC, bearer auth, redaction defaults               |
-| a2a/*                            workspace, task, message, artifact coordination     |
 +--------------------------------------------------------------------------------------+
 | Primary UI: React dashboard                                                           |
 | Legacy UI kept only for reference: dashboard/app.py                                   |
@@ -208,7 +206,6 @@ The incident, action results, and report metadata are stored so the analyst can 
 - `main.py`
 - `api/app.py`
 - `dashboard/src/`
-- `a2a/cli.py`
 
 ### Shared orchestration
 
@@ -224,7 +221,6 @@ This service is the main coordination layer reused by CLI, API, and dashboard fl
 - `reporting/` for report generation
 - `storage/` for repositories and persistence adapters
 - `security/` for auth and RBAC
-- `a2a/` for collaboration bus workflows
 
 ### Persistence path
 
@@ -290,12 +286,6 @@ Bearer-token auth is required for protected API routes.
 - `incident_process`
 - `incident_read`
 
-### A2A roles
-
-- `a2a_admin`
-- `a2a_read`
-- `a2a_agent`
-
 ### Redaction behavior
 
 Sensitive incident fields are still redacted by default in API-facing incident detail responses:
@@ -333,12 +323,6 @@ Stored entities include:
 - incidents
 - action results
 - reports
-- A2A workspaces
-- agents
-- tasks
-- messages
-- artifacts
-- timeline data
 
 Important behavior already implemented:
 
@@ -423,8 +407,6 @@ Important route behavior:
 - `POST /api/v1/incidents/process`
   - rejects sanitized/redacted payloads with HTTP `422`
 
-A2A collaboration routes are also available under `/api/v1/a2a/*`.
-
 ---
 
 ## Project Structure
@@ -432,7 +414,6 @@ A2A collaboration routes are also available under `/api/v1/a2a/*`.
 ```text
 SOAR Playbook/
 |-- actions/
-|-- a2a/
 |-- alert_generator/
 |-- api/
 |-- dashboard/
@@ -461,9 +442,9 @@ SOAR Playbook/
 
 ## Verification Snapshot
 
-Latest verified in this repo on 2026-07-02:
+Latest verified in this repo on 2026-08-07:
 
-- `pytest tests -q` -> `63 passed`
+- `pytest tests -q` -> `70 passed`
 - `cmd /c npm run build` in `dashboard/` -> passed
 - live Supabase persistence path verified through incident processing
 - live VirusTotal-backed enrichment path exercised in the workflow
@@ -471,9 +452,8 @@ Latest verified in this repo on 2026-07-02:
 Recommended companion docs:
 
 - `docs/supabase-setup.md`
+- `docs/production-roadmap.md`
 - `docs/upgrade-roadmap.md`
-- `docs/three-codex-team.md`
-- `docs/a2a-collaboration.md`
 - `docs/pentest-report-2026-07-02.md`
 
 ---

@@ -4,7 +4,6 @@ This repo now uses Supabase Postgres as the default runtime persistence target f
 
 - incident storage
 - report artifact metadata
-- A2A collaboration storage
 
 If you do not pass an explicit local database path, the Python runtime will try to use the Supabase/Postgres connection.
 
@@ -31,7 +30,6 @@ Optional overrides:
 
 ```env
 SOAR_DATABASE_URL=postgresql://...
-SOAR_A2A_DB_URL=postgresql://...
 SOAR_API_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 VITE_SOAR_API_BASE_URL=
 ```
@@ -40,7 +38,6 @@ Behavior:
 
 - `SUPABASE_DB_URL` is the common fallback connection
 - `SOAR_DATABASE_URL` overrides the incident repository target
-- `SOAR_A2A_DB_URL` overrides the A2A repository target
 - `SOAR_API_PROXY_TARGET` is read by `dashboard/vite.config.ts`
 - `dashboard/api/*.js` uses the same `SOAR_API_PROXY_TARGET` value for production proxying on Vercel
 - repo-root `.env.local` is visible to Vite because the dashboard uses `envDir: ".."`
