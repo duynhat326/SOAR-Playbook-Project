@@ -17,6 +17,7 @@ from api.schemas import (
     SavedFilterCreateRequest,
 )
 from fastapi import HTTPException
+from pydantic import ValidationError
 from engine.policy_engine import PolicyEngine
 from engine.policy_loader import DEFAULT_POLICY_CONFIG
 from services.remediation_queue import RepositoryQueuePublisher
@@ -537,6 +538,7 @@ def test_case_update_note_and_saved_filter_endpoints(tmp_path, monkeypatch, inci
         principal=incident_operator_principal,
     )
     assert saved_filter.name == "triaged-soc"
+    assert saved_filter.workspace == "default"
 
     filters = api_app.list_saved_filters(principal=incident_operator_principal)
     assert filters[0].name == "triaged-soc"
@@ -601,6 +603,142 @@ def test_bulk_update_and_readiness_endpoints(tmp_path, monkeypatch, incident_ope
     snapshot = api_app.observability_snapshot(principal=incident_operator_principal)
     assert "metrics" in snapshot
     assert "structured_log_path" in snapshot
+
+
+def test_add_incident_note_rejects_spoofed_author(tmp_path, monkeypatch, incident_operator_principal):
+    test_service = SoarWorkflowService(
+        verbose=False,
+        db_path=tmp_path / "soar.db",
+    )
+    monkeypatch.setattr(api_app, "get_workflow_service", lambda: test_service)
+
+    response = api_app.process_scenario(
+        ProcessScenarioRequest(
+            scenario="benign",
+            seed=9401,
+            generate_report=False,
+            export_pdf=False,
+        ),
+        principal=incident_operator_principal,
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        api_app.add_incident_note(
+            response.response.alert_id,
+            IncidentNoteCreateRequest(author="spoofed-analyst", body="Forged note"),
+            principal=incident_operator_principal,
+        )
+
+    assert excinfo.value.status_code == 403
+    assert "must match the authenticated principal" in str(excinfo.value.detail)
+
+
+def test_save_filter_rejects_spoofed_created_by(tmp_path, monkeypatch, incident_operator_principal):
+    test_service = SoarWorkflowService(
+        verbose=False,
+        db_path=tmp_path / "soar.db",
+    )
+    monkeypatch.setattr(api_app, "get_workflow_service", lambda: test_service)
+
+    with pytest.raises(HTTPException) as excinfo:
+        api_app.save_filter(
+            SavedFilterCreateRequest(
+                name="spoofed-filter",
+                created_by="spoofed-analyst",
+                filters={"case_status": "new"},
+            ),
+            principal=incident_operator_principal,
+        )
+
+    assert excinfo.value.status_code == 403
+    assert "must match the authenticated principal" in str(excinfo.value.detail)
+
+
+def test_workspace_scoping_hides_cross_workspace_incidents_and_filters(
+    tmp_path,
+    monkeypatch,
+    principal_factory,
+):
+    test_service = SoarWorkflowService(
+        verbose=False,
+        db_path=tmp_path / "soar.db",
+    )
+    monkeypatch.setattr(api_app, "get_workflow_service", lambda: test_service)
+    alpha_principal = principal_factory(
+        "alpha-operator",
+        roles=[api_app.ROLE_INCIDENT_PROCESS, api_app.ROLE_INCIDENT_READ],
+        workspaces=["alpha"],
+    )
+    bravo_principal = principal_factory(
+        "bravo-operator",
+        roles=[api_app.ROLE_INCIDENT_PROCESS, api_app.ROLE_INCIDENT_READ],
+        workspaces=["bravo"],
+    )
+
+    response = api_app.process_scenario(
+        ProcessScenarioRequest(
+            scenario="mixed",
+            seed=9420,
+            generate_report=False,
+            export_pdf=False,
+            workspace="alpha",
+        ),
+        principal=alpha_principal,
+    )
+
+    alpha_incidents = api_app.list_incidents(limit=50, principal=alpha_principal)
+    bravo_incidents = api_app.list_incidents(limit=50, principal=bravo_principal)
+
+    assert alpha_incidents
+    assert alpha_incidents[0].workspace == "alpha"
+    assert bravo_incidents == []
+
+    with pytest.raises(HTTPException) as excinfo:
+        api_app.get_incident_by_alert_id(
+            response.response.alert_id,
+            principal=bravo_principal,
+        )
+
+    assert excinfo.value.status_code == 404
+
+    saved_filter = api_app.save_filter(
+        SavedFilterCreateRequest(
+            name="alpha-only",
+            filters={"case_status": "new"},
+            workspace="alpha",
+        ),
+        principal=alpha_principal,
+    )
+
+    assert saved_filter.workspace == "alpha"
+    assert api_app.list_saved_filters(principal=bravo_principal) == []
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [
+        lambda: IncidentCaseUpdateRequest(comment="x" * 2001),
+        lambda: ActionApprovalRequest(comment="x" * 2001),
+        lambda: ActionRollbackRequest(comment="x" * 2001),
+        lambda: IncidentReopenRequest(comment="x" * 2001),
+    ],
+)
+def test_comment_request_models_reject_oversized_values(builder):
+    with pytest.raises(ValidationError):
+        builder()
+
+
+def test_incident_note_request_rejects_oversized_body():
+    with pytest.raises(ValidationError):
+        IncidentNoteCreateRequest(body="x" * 4001)
+
+
+def test_saved_filter_request_rejects_oversized_payload():
+    with pytest.raises(ValidationError):
+        SavedFilterCreateRequest(
+            name="oversized-filter",
+            filters={"query": "x" * 5000},
+        )
 
 
 def test_approve_and_reject_action_endpoints(tmp_path, monkeypatch, incident_operator_principal):
@@ -675,6 +813,54 @@ def test_approve_and_reject_action_endpoints(tmp_path, monkeypatch, incident_ope
     rejected_action = next(action for action in rejected.action_results if action.action == "isolate_host")
     assert rejected_action.approval_state == "rejected"
     assert rejected_action.status == "failed"
+
+
+def test_approval_endpoints_reject_spoofed_actor(tmp_path, monkeypatch, incident_operator_principal):
+    monkeypatch.setenv("SOAR_APPROVAL_REQUIRED_ACTIONS", "isolate_host")
+    config_data = yaml.safe_load(yaml.safe_dump(DEFAULT_POLICY_CONFIG, sort_keys=False))
+    config_data["execution"]["mode"] = "queued"
+    config_path = tmp_path / "response_rules.yaml"
+    config_path.write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+    repository = SQLiteIncidentRepository(tmp_path / "soar.db")
+    publisher = RepositoryQueuePublisher(repository)
+    test_service = SoarWorkflowService(
+        verbose=False,
+        repository=repository,
+        policy_engine=PolicyEngine(
+            verbose=False,
+            policy_config_path=config_path,
+            queue_publisher=publisher,
+        ),
+    )
+    monkeypatch.setattr(api_app, "get_workflow_service", lambda: test_service)
+
+    alert = generate_alert(scenario="malicious_hash", seed=9501)
+    api_app.process_incident(
+        ProcessAlertRequest(
+            alert=alert,
+            generate_report=False,
+            export_pdf=False,
+        ),
+        principal=incident_operator_principal,
+    )
+
+    incident = api_app.get_incident_by_alert_id(
+        alert.alert_id,
+        include_sensitive=True,
+        principal=incident_operator_principal,
+    )
+    pending_action = next(action for action in incident.action_results if action.action == "isolate_host")
+
+    with pytest.raises(HTTPException) as excinfo:
+        api_app.approve_action(
+            alert.alert_id,
+            pending_action.correlation_id,
+            ActionApprovalRequest(actor="spoofed-analyst", comment="Forged approval"),
+            principal=incident_operator_principal,
+        )
+
+    assert excinfo.value.status_code == 403
+    assert "must match the authenticated principal" in str(excinfo.value.detail)
 
 
 def test_approval_endpoints_reject_invalid_state_transitions(tmp_path, monkeypatch, incident_operator_principal):

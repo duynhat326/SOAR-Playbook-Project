@@ -14,6 +14,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from time_utils import utc_now
+from workspace_utils import get_default_workspace, normalize_workspace
 
 
 class Severity(str, Enum):
@@ -185,6 +186,11 @@ class MalwareAlert(BaseModel):
         description="Triggered detection name",
         examples=["Trojan.Generic", "Malware.Powershell.Encoded"],
     )
+    workspace: str = Field(
+        default_factory=get_default_workspace,
+        description="Canonical workspace boundary for the alert and derived incident.",
+        examples=["default", "soc-a"],
+    )
     received_at: datetime = Field(
         default_factory=utc_now,
         description="Time the alert entered the SOAR pipeline (UTC)",
@@ -209,6 +215,11 @@ class MalwareAlert(BaseModel):
             if not part.isdigit() or not (0 <= int(part) <= 255):
                 raise ValueError(f"IP '{value}' is not a valid IPv4 address.")
         return value
+
+    @field_validator("workspace")
+    @classmethod
+    def validate_workspace(cls, value: str) -> str:
+        return normalize_workspace(value)
 
 class HashEnrichment(BaseModel):
     """Hash enrichment result."""
@@ -376,8 +387,8 @@ class IncidentNote(BaseModel):
     """Analyst-authored note attached to an incident case."""
 
     note_id: str = Field(default_factory=lambda: f"note-{uuid4().hex}")
-    author: str
-    body: str
+    author: str = Field(min_length=1, max_length=128)
+    body: str = Field(min_length=1, max_length=4000)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from schemas.alert import IncidentAuditEvent, IncidentNote, IncidentResponse, MalwareAlert
 from services.workflow_service import WorkflowResult
+from workspace_utils import normalize_workspace
 
 
 ScenarioName = Literal[
@@ -19,11 +21,95 @@ ScenarioName = Literal[
     "random",
 ]
 
+MAX_COMMENT_LENGTH = 2000
+MAX_CASE_OWNER_LENGTH = 128
+MAX_IDENTITY_LENGTH = 128
+MAX_NOTE_BODY_LENGTH = 4000
+MAX_SAVED_FILTER_NAME_LENGTH = 128
+MAX_SAVED_FILTER_BYTES = 4096
+MAX_SAVED_FILTER_DEPTH = 4
+MAX_SAVED_FILTER_COLLECTION_ITEMS = 50
+MAX_SAVED_FILTER_SCALAR_LENGTH = 512
+MAX_SAVED_FILTER_TOTAL_NODES = 128
+MAX_TOP_LEVEL_FILTER_KEYS = 16
+MAX_WORKSPACE_LENGTH = 64
+MAX_BULK_UPDATE_ALERT_IDS = 200
+
+
+def _validate_saved_filter_payload(filters: dict[str, Any]) -> dict[str, Any]:
+    total_nodes = 0
+
+    def walk(value: Any, *, depth: int) -> None:
+        nonlocal total_nodes
+        if depth > MAX_SAVED_FILTER_DEPTH:
+            raise ValueError(
+                f"Saved filters cannot be nested deeper than {MAX_SAVED_FILTER_DEPTH} levels."
+            )
+
+        if isinstance(value, dict):
+            max_items = MAX_TOP_LEVEL_FILTER_KEYS if depth == 1 else MAX_SAVED_FILTER_COLLECTION_ITEMS
+            if len(value) > max_items:
+                raise ValueError(f"Saved filters cannot contain more than {max_items} items at this level.")
+            for key, child in value.items():
+                if not isinstance(key, str):
+                    raise ValueError("Saved filter keys must be strings.")
+                if len(key) > MAX_SAVED_FILTER_SCALAR_LENGTH:
+                    raise ValueError(
+                        f"Saved filter keys cannot exceed {MAX_SAVED_FILTER_SCALAR_LENGTH} characters."
+                    )
+                total_nodes += 1
+                if total_nodes > MAX_SAVED_FILTER_TOTAL_NODES:
+                    raise ValueError(
+                        f"Saved filters cannot contain more than {MAX_SAVED_FILTER_TOTAL_NODES} values."
+                    )
+                walk(child, depth=depth + 1)
+            return
+
+        if isinstance(value, list):
+            if len(value) > MAX_SAVED_FILTER_COLLECTION_ITEMS:
+                raise ValueError(
+                    f"Saved filter lists cannot contain more than {MAX_SAVED_FILTER_COLLECTION_ITEMS} items."
+                )
+            for child in value:
+                total_nodes += 1
+                if total_nodes > MAX_SAVED_FILTER_TOTAL_NODES:
+                    raise ValueError(
+                        f"Saved filters cannot contain more than {MAX_SAVED_FILTER_TOTAL_NODES} values."
+                    )
+                walk(child, depth=depth + 1)
+            return
+
+        if value is None or isinstance(value, (bool, int, float)):
+            return
+
+        if isinstance(value, str):
+            if len(value) > MAX_SAVED_FILTER_SCALAR_LENGTH:
+                raise ValueError(
+                    f"Saved filter values cannot exceed {MAX_SAVED_FILTER_SCALAR_LENGTH} characters."
+                )
+            return
+
+        raise ValueError("Saved filters must contain only JSON-compatible scalar, list, or object values.")
+
+    walk(filters, depth=1)
+    serialized = json.dumps(filters, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized.encode("utf-8")) > MAX_SAVED_FILTER_BYTES:
+        raise ValueError(f"Saved filters cannot exceed {MAX_SAVED_FILTER_BYTES} bytes when serialized.")
+    return filters
+
 
 class ProcessAlertRequest(BaseModel):
     alert: MalwareAlert
     generate_report: bool = Field(default=False)
     export_pdf: bool = Field(default=False)
+    workspace: Optional[str] = Field(default=None, max_length=MAX_WORKSPACE_LENGTH)
+
+    @field_validator("workspace")
+    @classmethod
+    def validate_workspace(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return normalize_workspace(value)
 
 
 class ProcessScenarioRequest(BaseModel):
@@ -31,6 +117,14 @@ class ProcessScenarioRequest(BaseModel):
     seed: int = Field(default=2024, ge=0)
     generate_report: bool = Field(default=False)
     export_pdf: bool = Field(default=False)
+    workspace: Optional[str] = Field(default=None, max_length=MAX_WORKSPACE_LENGTH)
+
+    @field_validator("workspace")
+    @classmethod
+    def validate_workspace(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return normalize_workspace(value)
 
 
 class DashboardScenarioOptionResponse(BaseModel):
@@ -118,6 +212,7 @@ class IncidentSummaryResponse(BaseModel):
     alert_id: str
     incident_key: str
     latest_alert_id: str
+    workspace: str
     hostname: str
     detection_name: str
     risk_score: float
@@ -143,6 +238,7 @@ class IncidentRecordResponse(BaseModel):
     alert_id: str
     incident_key: str
     latest_alert_id: str
+    workspace: str
     hostname: str
     detection_name: str
     risk_score: float
@@ -175,46 +271,60 @@ class IncidentRecordResponse(BaseModel):
 
 
 class IncidentCaseUpdateRequest(BaseModel):
-    case_status: Optional[str] = None
-    case_owner: Optional[str] = None
-    comment: Optional[str] = None
+    case_status: Optional[str] = Field(default=None, max_length=64)
+    case_owner: Optional[str] = Field(default=None, max_length=MAX_CASE_OWNER_LENGTH)
+    comment: Optional[str] = Field(default=None, max_length=MAX_COMMENT_LENGTH)
 
 
 class IncidentNoteCreateRequest(BaseModel):
-    author: str
-    body: str
+    author: Optional[str] = Field(default=None, max_length=MAX_IDENTITY_LENGTH)
+    body: str = Field(min_length=1, max_length=MAX_NOTE_BODY_LENGTH)
 
 
 class BulkIncidentUpdateRequest(BaseModel):
-    alert_ids: list[str] = Field(default_factory=list)
-    case_status: Optional[str] = None
-    case_owner: Optional[str] = None
-    comment: Optional[str] = None
+    alert_ids: list[str] = Field(default_factory=list, min_length=1, max_length=MAX_BULK_UPDATE_ALERT_IDS)
+    case_status: Optional[str] = Field(default=None, max_length=64)
+    case_owner: Optional[str] = Field(default=None, max_length=MAX_CASE_OWNER_LENGTH)
+    comment: Optional[str] = Field(default=None, max_length=MAX_COMMENT_LENGTH)
 
 
 class ActionApprovalRequest(BaseModel):
-    actor: str
-    comment: Optional[str] = None
+    actor: Optional[str] = Field(default=None, max_length=MAX_IDENTITY_LENGTH)
+    comment: Optional[str] = Field(default=None, max_length=MAX_COMMENT_LENGTH)
 
 
 class ActionRollbackRequest(BaseModel):
-    actor: str
-    comment: Optional[str] = None
+    actor: Optional[str] = Field(default=None, max_length=MAX_IDENTITY_LENGTH)
+    comment: Optional[str] = Field(default=None, max_length=MAX_COMMENT_LENGTH)
 
 
 class IncidentReopenRequest(BaseModel):
-    comment: Optional[str] = None
+    comment: Optional[str] = Field(default=None, max_length=MAX_COMMENT_LENGTH)
 
 
 class SavedFilterCreateRequest(BaseModel):
-    name: str
-    created_by: str
+    name: str = Field(min_length=1, max_length=MAX_SAVED_FILTER_NAME_LENGTH)
+    created_by: Optional[str] = Field(default=None, max_length=MAX_IDENTITY_LENGTH)
+    workspace: Optional[str] = Field(default=None, max_length=MAX_WORKSPACE_LENGTH)
     filters: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("workspace")
+    @classmethod
+    def validate_workspace(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return normalize_workspace(value)
+
+    @field_validator("filters")
+    @classmethod
+    def validate_filters(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return _validate_saved_filter_payload(value)
 
 
 class SavedFilterResponse(BaseModel):
     id: int
     name: str
+    workspace: str
     filters: dict[str, Any] = Field(default_factory=dict)
     created_by: str
     created_at: str

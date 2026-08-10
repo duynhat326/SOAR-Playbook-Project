@@ -102,6 +102,45 @@ def _principal_actor(principal: AuthenticatedPrincipal) -> str:
     return principal.agent_id or principal.principal_id
 
 
+def _resolve_authenticated_actor(
+    principal: AuthenticatedPrincipal,
+    claimed_actor: Optional[str],
+    *,
+    field_name: str,
+) -> str:
+    expected_actor = _principal_actor(principal)
+    candidate = (claimed_actor or "").strip()
+    if candidate and candidate != expected_actor:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Request field '{field_name}' must match the authenticated principal.",
+        )
+    return expected_actor
+
+
+def _resolve_workspace_for_principal(
+    principal: AuthenticatedPrincipal,
+    requested_workspace: Optional[str],
+) -> str:
+    try:
+        return principal.resolve_workspace(requested_workspace)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 403 if "not authorized" in detail else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
+def _ensure_incident_workspace_access(
+    incident: dict[str, Any],
+    *,
+    principal: AuthenticatedPrincipal,
+    selector: str,
+) -> dict[str, Any]:
+    if principal.can_access_workspace(incident.get("workspace")):
+        return incident
+    raise HTTPException(status_code=404, detail=f"Incident not found for {selector}")
+
+
 @contextmanager
 def _route_context(
     route_name: str,
@@ -152,6 +191,18 @@ def _get_incident_or_404(alert_id: str) -> dict[str, Any]:
     if incident is None:
         raise HTTPException(status_code=404, detail=f"Incident not found for alert_id={alert_id}")
     return incident
+
+
+def _get_scoped_incident_or_404(
+    alert_id: str,
+    *,
+    principal: AuthenticatedPrincipal,
+) -> dict[str, Any]:
+    return _ensure_incident_workspace_access(
+        _get_incident_or_404(alert_id),
+        principal=principal,
+        selector=f"alert_id={alert_id}",
+    )
 
 
 def _serialize_incident_record_for_principal(
@@ -327,10 +378,13 @@ def process_incident(
     ) as bound_principal:
         assert bound_principal is not None
         _assert_processable_alert_payload(request.alert)
+        workspace = _resolve_workspace_for_principal(bound_principal, request.workspace)
+        alert = request.alert.model_copy(update={"workspace": workspace})
         result = get_workflow_service().process_alert(
-            request.alert,
+            alert,
             generate_report=request.generate_report,
             export_pdf=request.export_pdf,
+            workspace=workspace,
         )
         return ProcessIncidentResponse.from_workflow_result(result)
 
@@ -347,14 +401,16 @@ def process_scenario(
         seed=request.seed,
     ) as bound_principal:
         assert bound_principal is not None
+        workspace = _resolve_workspace_for_principal(bound_principal, request.workspace)
         alert = generate_alert(
             scenario=request.scenario,
             seed=request.seed,
-        )
+        ).model_copy(update={"workspace": workspace})
         result = get_workflow_service().process_alert(
             alert,
             generate_report=request.generate_report,
             export_pdf=request.export_pdf,
+            workspace=workspace,
         )
         return ProcessIncidentResponse.from_workflow_result(result)
 
@@ -390,6 +446,7 @@ def list_incidents(
             ticket_id=ticket_id,
             case_status=case_status,
             case_owner=case_owner,
+            workspaces=bound_principal.effective_workspaces(),
         )
         return [IncidentSummaryResponse.model_validate(item) for item in incidents]
 
@@ -400,6 +457,8 @@ def bulk_update_incidents(
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> list[IncidentRecordResponse]:
     principal = _require_bound_principal(principal)
+    for alert_id in request.alert_ids:
+        _get_scoped_incident_or_404(alert_id, principal=principal)
     incidents = get_workflow_service().bulk_update_incidents(
         request.alert_ids,
         case_status=request.case_status,
@@ -415,7 +474,12 @@ def list_saved_filters(
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_READ)),
 ) -> list[SavedFilterResponse]:
     principal = _require_bound_principal(principal)
-    return [SavedFilterResponse.model_validate(item) for item in get_workflow_service().list_saved_filters()]
+    return [
+        SavedFilterResponse.model_validate(item)
+        for item in get_workflow_service().list_saved_filters(
+            workspaces=principal.effective_workspaces()
+        )
+    ]
 
 
 @app.post("/api/v1/incidents/saved-filters", response_model=SavedFilterResponse)
@@ -424,10 +488,17 @@ def save_filter(
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> SavedFilterResponse:
     principal = _require_bound_principal(principal)
+    created_by = _resolve_authenticated_actor(
+        principal,
+        request.created_by,
+        field_name="created_by",
+    )
+    workspace = _resolve_workspace_for_principal(principal, request.workspace)
     saved = get_workflow_service().save_filter(
         name=request.name,
         filters=request.filters,
-        created_by=request.created_by or _principal_actor(principal),
+        created_by=created_by,
+        workspace=workspace,
     )
     return SavedFilterResponse.model_validate(saved)
 
@@ -439,7 +510,7 @@ def get_incident_by_alert_id(
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_READ)),
 ) -> IncidentRecordResponse:
     principal = _require_bound_principal(principal)
-    incident = _get_incident_or_404(alert_id)
+    incident = _get_scoped_incident_or_404(alert_id, principal=principal)
     return _serialize_incident_record_for_principal(
         incident,
         principal=principal,
@@ -454,6 +525,7 @@ def update_incident_case(
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> IncidentRecordResponse:
     with _route_context("update_incident_case", principal=principal, alert_id=alert_id) as bound_principal:
+        _get_scoped_incident_or_404(alert_id, principal=bound_principal)
         incident = get_workflow_service().update_incident_case(
             alert_id,
             case_status=request.case_status,
@@ -473,9 +545,15 @@ def add_incident_note(
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> dict[str, Any]:
     with _route_context("add_incident_note", principal=principal, alert_id=alert_id) as bound_principal:
+        _get_scoped_incident_or_404(alert_id, principal=bound_principal)
+        author = _resolve_authenticated_actor(
+            bound_principal,
+            request.author,
+            field_name="author",
+        )
         note = get_workflow_service().add_incident_note(
             alert_id,
-            author=request.author or _principal_actor(bound_principal),
+            author=author,
             body=request.body,
         )
         if note is None:
@@ -496,11 +574,17 @@ def approve_action(
         alert_id=alert_id,
         correlation_id=correlation_id,
     ) as bound_principal:
+        _get_scoped_incident_or_404(alert_id, principal=bound_principal)
         try:
+            actor = _resolve_authenticated_actor(
+                bound_principal,
+                request.actor,
+                field_name="actor",
+            )
             incident = get_workflow_service().approve_action(
                 alert_id,
                 correlation_id,
-                actor=request.actor or _principal_actor(bound_principal),
+                actor=actor,
                 comment=request.comment,
             )
         except ValueError as exc:
@@ -526,11 +610,17 @@ def reject_action(
         alert_id=alert_id,
         correlation_id=correlation_id,
     ) as bound_principal:
+        _get_scoped_incident_or_404(alert_id, principal=bound_principal)
         try:
+            actor = _resolve_authenticated_actor(
+                bound_principal,
+                request.actor,
+                field_name="actor",
+            )
             incident = get_workflow_service().reject_action(
                 alert_id,
                 correlation_id,
-                actor=request.actor or _principal_actor(bound_principal),
+                actor=actor,
                 comment=request.comment,
             )
         except ValueError as exc:
@@ -556,11 +646,17 @@ def rollback_action(
         alert_id=alert_id,
         correlation_id=correlation_id,
     ) as bound_principal:
+        _get_scoped_incident_or_404(alert_id, principal=bound_principal)
         try:
+            actor = _resolve_authenticated_actor(
+                bound_principal,
+                request.actor,
+                field_name="actor",
+            )
             incident = get_workflow_service().rollback_action(
                 alert_id,
                 correlation_id,
-                actor=request.actor or _principal_actor(bound_principal),
+                actor=actor,
                 comment=request.comment,
             )
         except ValueError as exc:
@@ -580,6 +676,7 @@ def reopen_incident(
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_PROCESS)),
 ) -> IncidentRecordResponse:
     with _route_context("reopen_incident", principal=principal, alert_id=alert_id) as bound_principal:
+        _get_scoped_incident_or_404(alert_id, principal=bound_principal)
         try:
             incident = get_workflow_service().reopen_incident(
                 alert_id,
@@ -610,7 +707,7 @@ def get_incident_report_html(
     principal: AuthenticatedPrincipal = Depends(require_roles(ROLE_INCIDENT_READ)),
 ) -> FileResponse:
     principal = _require_bound_principal(principal)
-    incident = _get_incident_or_404(alert_id)
+    incident = _get_scoped_incident_or_404(alert_id, principal=principal)
     report_path = _resolve_incident_html_report_path(incident)
     return FileResponse(
         path=report_path,
@@ -629,6 +726,11 @@ def get_incident_by_ticket_id(
     incident = get_workflow_service().get_incident_by_ticket_id(ticket_id)
     if incident is None:
         raise HTTPException(status_code=404, detail=f"Incident not found for ticket_id={ticket_id}")
+    incident = _ensure_incident_workspace_access(
+        incident,
+        principal=principal,
+        selector=f"ticket_id={ticket_id}",
+    )
     return _serialize_incident_record_for_principal(
         incident,
         principal=principal,

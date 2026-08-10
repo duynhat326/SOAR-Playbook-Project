@@ -18,6 +18,7 @@ from storage.incident_repository import (
     IncidentRepositoryProtocol,
     create_incident_repository,
 )
+from workspace_utils import normalize_workspace
 
 
 @dataclass
@@ -34,6 +35,7 @@ class WorkflowResult:
     enriched_alert: EnrichedAlert
     response: IncidentResponse
     artifacts: ReportArtifacts
+    workspace: str
 
 
 class SoarWorkflowService:
@@ -99,12 +101,16 @@ class SoarWorkflowService:
         generate_report: bool = True,
         export_pdf: bool = False,
         include_markdown_content: bool = False,
+        workspace: str | None = None,
     ) -> WorkflowResult:
+        resolved_workspace = normalize_workspace(workspace or alert.workspace)
+        alert = alert.model_copy(update={"workspace": resolved_workspace})
         with observability.trace(
             "workflow.process_alert",
             alert_id=alert.alert_id,
             hostname=alert.hostname,
             detection_name=alert.detection_name,
+            workspace=resolved_workspace,
         ):
             if self._repository is not None:
                 with observability.span("workflow.lookup_existing_incident"):
@@ -165,6 +171,7 @@ class SoarWorkflowService:
                 enriched_alert=enriched,
                 response=response,
                 artifacts=artifacts,
+                workspace=resolved_workspace,
             )
             if self._repository is not None:
                 with observability.span("workflow.persist_incident"):
@@ -194,6 +201,7 @@ class SoarWorkflowService:
         generate_report: bool = True,
         export_pdf: bool = False,
         include_markdown_content: bool = False,
+        workspace: str | None = None,
     ) -> WorkflowResult:
         alert = MalwareAlert(**alert_data)
         return self.process_alert(
@@ -201,6 +209,7 @@ class SoarWorkflowService:
             generate_report=generate_report,
             export_pdf=export_pdf,
             include_markdown_content=include_markdown_content,
+            workspace=workspace,
         )
 
     def process_source_payload(
@@ -211,6 +220,7 @@ class SoarWorkflowService:
         generate_report: bool = True,
         export_pdf: bool = False,
         include_markdown_content: bool = False,
+        workspace: str | None = None,
     ) -> WorkflowResult:
         alert = source_connector.normalize_alert(payload)
         return self.process_alert(
@@ -218,6 +228,7 @@ class SoarWorkflowService:
             generate_report=generate_report,
             export_pdf=export_pdf,
             include_markdown_content=include_markdown_content,
+            workspace=workspace,
         )
 
     def get_incident_by_alert_id(self, alert_id: str) -> Optional[dict[str, Any]]:
@@ -248,6 +259,7 @@ class SoarWorkflowService:
         ticket_id: Optional[str] = None,
         case_status: Optional[str] = None,
         case_owner: Optional[str] = None,
+        workspaces: Optional[list[str] | tuple[str, ...] | frozenset[str]] = None,
     ) -> list[dict[str, Any]]:
         if self._repository is None:
             raise RuntimeError("Persistence is disabled for this workflow service.")
@@ -259,6 +271,7 @@ class SoarWorkflowService:
             ticket_id=ticket_id,
             case_status=case_status,
             case_owner=case_owner,
+            workspaces=workspaces,
         )
 
     def get_incident_metrics(self) -> dict[str, Any]:
@@ -484,15 +497,25 @@ class SoarWorkflowService:
         name: str,
         filters: dict[str, Any],
         created_by: str,
+        workspace: str,
     ) -> dict[str, Any]:
         if self._repository is None:
             raise RuntimeError("Persistence is disabled for this workflow service.")
-        return self._repository.save_filter(name=name, filters=filters, created_by=created_by)
+        return self._repository.save_filter(
+            name=name,
+            filters=filters,
+            created_by=created_by,
+            workspace=workspace,
+        )
 
-    def list_saved_filters(self) -> list[dict[str, Any]]:
+    def list_saved_filters(
+        self,
+        *,
+        workspaces: Optional[list[str] | tuple[str, ...] | frozenset[str]] = None,
+    ) -> list[dict[str, Any]]:
         if self._repository is None:
             raise RuntimeError("Persistence is disabled for this workflow service.")
-        return self._repository.list_saved_filters()
+        return self._repository.list_saved_filters(workspaces=workspaces)
 
     def get_readiness(self) -> dict[str, Any]:
         if self._repository is None:
@@ -525,6 +548,7 @@ class SoarWorkflowService:
                     report.get("markdown_content") if include_markdown_content else None
                 ),
             ),
+            workspace=normalize_workspace(record.get("workspace")),
         )
 
     @staticmethod

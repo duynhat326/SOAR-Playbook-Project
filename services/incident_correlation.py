@@ -85,6 +85,7 @@ class CorrelationLookupProtocol(Protocol):
         *,
         observed_at: datetime,
         window: timedelta,
+        workspace: str,
     ) -> Optional[dict[str, Any]]: ...
 
 
@@ -124,6 +125,7 @@ class IncidentCorrelationService:
             fingerprints,
             observed_at=alert.received_at,
             window=window,
+            workspace=alert.workspace,
         )
         if not match_payload:
             return CorrelationResolution(

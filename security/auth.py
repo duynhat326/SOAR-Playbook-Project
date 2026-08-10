@@ -9,6 +9,7 @@ from typing import Callable, Literal, Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, ValidationError, model_validator
+from workspace_utils import can_access_workspace, effective_workspaces, resolve_workspace_for_request
 
 
 ROLE_INCIDENT_PROCESS = "incident_process"
@@ -46,6 +47,15 @@ class AuthenticatedPrincipal:
 
     def has_role(self, role: str) -> bool:
         return role in self.roles
+
+    def can_access_workspace(self, workspace: str | None) -> bool:
+        return can_access_workspace(self.workspaces, workspace)
+
+    def resolve_workspace(self, requested_workspace: str | None = None) -> str:
+        return resolve_workspace_for_request(self.workspaces, requested_workspace)
+
+    def effective_workspaces(self) -> frozenset[str]:
+        return effective_workspaces(self.workspaces)
 
 
 class AuthConfigurationError(RuntimeError):
@@ -86,7 +96,7 @@ def _load_token_map() -> dict[str, AuthenticatedPrincipal]:
             principal_id=item.principal_id,
             principal_type=item.principal_type,
             roles=frozenset(item.roles),
-            workspaces=frozenset(item.workspaces),
+            workspaces=effective_workspaces(item.workspaces),
             agent_id=item.agent_id,
         )
     return token_map

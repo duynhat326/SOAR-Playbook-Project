@@ -19,6 +19,7 @@ from schemas.alert import (
     ResponseAction,
 )
 from time_utils import utc_now
+from workspace_utils import effective_workspaces, normalize_workspace
 
 if TYPE_CHECKING:
     from services.incident_correlation import CorrelationFingerprint
@@ -56,6 +57,7 @@ class SQLiteIncidentRepository:
                 """
                 CREATE TABLE IF NOT EXISTS alerts (
                     alert_id TEXT PRIMARY KEY,
+                    workspace TEXT NOT NULL DEFAULT 'default',
                     hostname TEXT NOT NULL,
                     username TEXT NOT NULL,
                     process_name TEXT NOT NULL,
@@ -77,6 +79,7 @@ class SQLiteIncidentRepository:
                     alert_id TEXT NOT NULL UNIQUE,
                     incident_key TEXT,
                     latest_alert_id TEXT,
+                    workspace TEXT NOT NULL DEFAULT 'default',
                     hostname TEXT NOT NULL,
                     detection_name TEXT NOT NULL,
                     risk_score REAL NOT NULL,
@@ -215,18 +218,22 @@ class SQLiteIncidentRepository:
 
                 CREATE TABLE IF NOT EXISTS saved_filters (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE,
+                    workspace TEXT NOT NULL DEFAULT 'default',
+                    name TEXT NOT NULL,
                     filters_json TEXT NOT NULL,
                     created_by TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(workspace, name)
                 );
                 """
             )
+            self._ensure_column(conn, "alerts", "workspace", "TEXT NOT NULL DEFAULT 'default'")
             self._ensure_column(conn, "incidents", "case_status", "TEXT NOT NULL DEFAULT 'new'")
             self._ensure_column(conn, "incidents", "case_owner", "TEXT")
             self._ensure_column(conn, "incidents", "incident_key", "TEXT")
             self._ensure_column(conn, "incidents", "latest_alert_id", "TEXT")
+            self._ensure_column(conn, "incidents", "workspace", "TEXT NOT NULL DEFAULT 'default'")
             self._ensure_column(conn, "action_results", "alert_id", "TEXT")
             self._ensure_column(conn, "action_results", "correlation_id", "TEXT")
             self._ensure_column(conn, "action_results", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
@@ -245,6 +252,7 @@ class SQLiteIncidentRepository:
             self._ensure_column(conn, "queue_jobs", "rollback_requested_at", "TEXT")
             self._ensure_column(conn, "audit_events", "previous_event_hash", "TEXT")
             self._ensure_column(conn, "audit_events", "event_hash", "TEXT")
+            self._migrate_saved_filters_table(conn)
             conn.execute(
                 "UPDATE action_results SET updated_at = executed_at WHERE updated_at IS NULL OR updated_at = ''"
             )
@@ -270,6 +278,27 @@ class SQLiteIncidentRepository:
             )
             conn.execute(
                 "UPDATE incidents SET latest_alert_id = COALESCE(latest_alert_id, alert_id)"
+            )
+            default_workspace = normalize_workspace(None)
+            conn.execute(
+                "UPDATE alerts SET workspace = ? WHERE workspace IS NULL OR trim(workspace) = ''",
+                (default_workspace,),
+            )
+            conn.execute(
+                """
+                UPDATE incidents
+                SET workspace = COALESCE(
+                    NULLIF(workspace, ''),
+                    (
+                        SELECT alerts.workspace
+                        FROM alerts
+                        WHERE alerts.alert_id = incidents.alert_id
+                    ),
+                    ?
+                )
+                WHERE workspace IS NULL OR trim(workspace) = ''
+                """,
+                (default_workspace,),
             )
             conn.execute(
                 """
@@ -300,6 +329,9 @@ class SQLiteIncidentRepository:
                 CREATE INDEX IF NOT EXISTS idx_incidents_case_status
                 ON incidents(case_status);
 
+                CREATE INDEX IF NOT EXISTS idx_incidents_workspace
+                ON incidents(workspace);
+
                 CREATE INDEX IF NOT EXISTS idx_incidents_latest_alert_id
                 ON incidents(latest_alert_id);
 
@@ -323,6 +355,12 @@ class SQLiteIncidentRepository:
 
                 CREATE INDEX IF NOT EXISTS idx_audit_events_alert_id
                 ON audit_events(alert_id, created_at DESC);
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_filters_workspace_name
+                ON saved_filters(workspace, name);
+
+                CREATE INDEX IF NOT EXISTS idx_saved_filters_workspace_updated
+                ON saved_filters(workspace, updated_at DESC, id DESC);
                 """
             )
             conn.commit()
@@ -331,6 +369,7 @@ class SQLiteIncidentRepository:
         alert = result.alert
         enriched = result.enriched_alert
         response = result.response
+        workspace = normalize_workspace(result.workspace)
         timestamp = self._utc_now()
         incident_status = self._derive_incident_status(response.action_results)
         correlation_trace = response.correlation_trace
@@ -349,11 +388,12 @@ class SQLiteIncidentRepository:
             conn.execute(
                 """
                 INSERT INTO alerts (
-                    alert_id, hostname, username, process_name, file_path, file_hash,
+                    alert_id, workspace, hostname, username, process_name, file_path, file_hash,
                     parent_process, command_line, destination_ip, severity,
                     detection_name, received_at, raw_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(alert_id) DO UPDATE SET
+                    workspace=excluded.workspace,
                     hostname=excluded.hostname,
                     username=excluded.username,
                     process_name=excluded.process_name,
@@ -370,6 +410,7 @@ class SQLiteIncidentRepository:
                 """,
                 (
                     alert.alert_id,
+                    workspace,
                     alert.hostname,
                     alert.username,
                     alert.process_name,
@@ -391,6 +432,7 @@ class SQLiteIncidentRepository:
                 conn,
                 alert_id=alert.alert_id,
                 incident_key=incident_key,
+                workspace=workspace,
             )
             stored_ticket_id = response.ticket_id
             stored_report_path = response.report_path
@@ -408,16 +450,17 @@ class SQLiteIncidentRepository:
                 conn.execute(
                     """
                     INSERT INTO incidents (
-                        alert_id, incident_key, latest_alert_id, hostname, detection_name, risk_score, risk_level,
+                        alert_id, incident_key, latest_alert_id, workspace, hostname, detection_name, risk_score, risk_level,
                         ticket_id, status, completed_at, report_path, case_status,
                         case_owner, triggered_actions_json, policy_reasoning_json,
                         enriched_json, response_json, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         alert.alert_id,
                         incident_key,
                         alert.alert_id,
+                        workspace,
                         alert.hostname,
                         alert.detection_name,
                         enriched.risk_score,
@@ -448,6 +491,7 @@ class SQLiteIncidentRepository:
                     """
                     UPDATE incidents
                     SET latest_alert_id = ?,
+                        workspace = ?,
                         hostname = ?,
                         detection_name = ?,
                         risk_score = ?,
@@ -467,6 +511,7 @@ class SQLiteIncidentRepository:
                     """,
                     (
                         alert.alert_id,
+                        workspace,
                         alert.hostname,
                         alert.detection_name,
                         enriched.risk_score,
@@ -1556,19 +1601,22 @@ class SQLiteIncidentRepository:
         name: str,
         filters: dict[str, Any],
         created_by: str,
+        workspace: str,
     ) -> dict[str, Any]:
         timestamp = self._utc_now()
+        resolved_workspace = normalize_workspace(workspace)
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO saved_filters (name, filters_json, created_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(name) DO UPDATE SET
+                INSERT INTO saved_filters (workspace, name, filters_json, created_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace, name) DO UPDATE SET
                     filters_json = excluded.filters_json,
                     created_by = excluded.created_by,
                     updated_at = excluded.updated_at
                 """,
                 (
+                    resolved_workspace,
                     name,
                     json.dumps(filters, ensure_ascii=False),
                     created_by,
@@ -1578,24 +1626,41 @@ class SQLiteIncidentRepository:
             )
             row = conn.execute(
                 """
-                SELECT id, name, filters_json, created_by, created_at, updated_at
+                SELECT id, workspace, name, filters_json, created_by, created_at, updated_at
                 FROM saved_filters
-                WHERE name = ?
+                WHERE workspace = ? AND name = ?
                 """,
-                (name,),
+                (resolved_workspace, name),
             ).fetchone()
             conn.commit()
         return self._deserialize_saved_filter(dict(row))
 
-    def list_saved_filters(self) -> list[dict[str, Any]]:
+    def list_saved_filters(self, *, workspaces: Optional[Sequence[str]] = None) -> list[dict[str, Any]]:
+        scoped_workspaces = tuple(
+            workspace
+            for workspace in effective_workspaces(workspaces)
+            if workspace != "*"
+        )
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, name, filters_json, created_by, created_at, updated_at
-                FROM saved_filters
-                ORDER BY updated_at DESC, id DESC
-                """
-            ).fetchall()
+            if scoped_workspaces:
+                placeholders = ", ".join("?" for _ in scoped_workspaces)
+                rows = conn.execute(
+                    f"""
+                    SELECT id, workspace, name, filters_json, created_by, created_at, updated_at
+                    FROM saved_filters
+                    WHERE workspace IN ({placeholders})
+                    ORDER BY updated_at DESC, id DESC
+                    """,
+                    scoped_workspaces,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, workspace, name, filters_json, created_by, created_at, updated_at
+                    FROM saved_filters
+                    ORDER BY updated_at DESC, id DESC
+                    """
+                ).fetchall()
         return [self._deserialize_saved_filter(dict(row)) for row in rows]
 
     def get_queue_metrics(self) -> dict[str, Any]:
@@ -1653,6 +1718,7 @@ class SQLiteIncidentRepository:
         *,
         observed_at: datetime,
         window: timedelta,
+        workspace: str,
     ) -> Optional[dict[str, Any]]:
         if not fingerprints:
             return None
@@ -1675,12 +1741,14 @@ class SQLiteIncidentRepository:
                     FROM incident_fingerprints
                     JOIN incidents ON incidents.id = incident_fingerprints.incident_id
                     WHERE incident_fingerprints.fingerprint = ?
+                      AND incidents.workspace = ?
                       AND incident_fingerprints.observed_at BETWEEN ? AND ?
                     ORDER BY incident_fingerprints.observed_at DESC, incident_fingerprints.id DESC
                     LIMIT 1
                     """,
                     (
                         fingerprint.fingerprint,
+                        normalize_workspace(workspace),
                         window_start_iso,
                         observed_at_iso,
                     ),
@@ -1747,6 +1815,7 @@ class SQLiteIncidentRepository:
                     incidents.alert_id,
                     incidents.incident_key,
                     COALESCE(incidents.latest_alert_id, incidents.alert_id) AS latest_alert_id,
+                    incidents.workspace,
                     incidents.hostname,
                     incidents.detection_name,
                     incidents.risk_score,
@@ -1793,6 +1862,7 @@ class SQLiteIncidentRepository:
         ticket_id: Optional[str] = None,
         case_status: Optional[str] = None,
         case_owner: Optional[str] = None,
+        workspaces: Optional[Sequence[str]] = None,
     ) -> list[dict[str, Any]]:
         if limit < 1 or limit > MAX_INCIDENT_LIST_LIMIT:
             raise ValueError(
@@ -1821,6 +1891,15 @@ class SQLiteIncidentRepository:
             if case_owner is not None:
                 where_clauses.append("incidents.case_owner = ?")
                 params.append(case_owner)
+            scoped_workspaces = tuple(
+                workspace
+                for workspace in effective_workspaces(workspaces)
+                if workspace != "*"
+            )
+            if scoped_workspaces:
+                placeholders = ", ".join("?" for _ in scoped_workspaces)
+                where_clauses.append(f"incidents.workspace IN ({placeholders})")
+                params.extend(scoped_workspaces)
 
             where_sql = ""
             if where_clauses:
@@ -1833,6 +1912,7 @@ class SQLiteIncidentRepository:
                     incidents.alert_id,
                     incidents.incident_key,
                     COALESCE(incidents.latest_alert_id, incidents.alert_id) AS latest_alert_id,
+                    incidents.workspace,
                     incidents.hostname,
                     incidents.detection_name,
                     incidents.risk_score,
@@ -1908,6 +1988,7 @@ class SQLiteIncidentRepository:
         row: sqlite3.Row,
     ) -> dict[str, Any]:
         result = dict(row)
+        result["workspace"] = normalize_workspace(result.get("workspace"))
         result["latest_alert_id"] = result.get("latest_alert_id") or result["alert_id"]
         result["triggered_actions"] = json.loads(result.pop("triggered_actions_json"))
         result["policy_reasoning"] = json.loads(result.pop("policy_reasoning_json"))
@@ -2283,6 +2364,41 @@ class SQLiteIncidentRepository:
             return
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
 
+    @classmethod
+    def _migrate_saved_filters_table(cls, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(saved_filters)").fetchall()
+        }
+        if "workspace" in columns:
+            return
+
+        default_workspace = normalize_workspace(None)
+        conn.execute("ALTER TABLE saved_filters RENAME TO saved_filters_legacy")
+        conn.execute(
+            """
+            CREATE TABLE saved_filters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace TEXT NOT NULL DEFAULT 'default',
+                name TEXT NOT NULL,
+                filters_json TEXT NOT NULL,
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workspace, name)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO saved_filters (id, workspace, name, filters_json, created_by, created_at, updated_at)
+            SELECT id, ?, name, filters_json, created_by, created_at, updated_at
+            FROM saved_filters_legacy
+            """,
+            (default_workspace,),
+        )
+        conn.execute("DROP TABLE saved_filters_legacy")
+
     @staticmethod
     def _dump_model(model: Any) -> str:
         return json.dumps(model.model_dump(mode="json"), ensure_ascii=False)
@@ -2348,6 +2464,7 @@ class SQLiteIncidentRepository:
         return {
             "id": row["id"],
             "name": row["name"],
+            "workspace": normalize_workspace(row.get("workspace")),
             "filters": json.loads(row["filters_json"]),
             "created_by": row["created_by"],
             "created_at": row["created_at"],
@@ -2362,39 +2479,47 @@ class SQLiteIncidentRepository:
         alert_id: Optional[str] = None,
         incident_key: Optional[str] = None,
         ticket_id: Optional[str] = None,
+        workspace: Optional[str] = None,
     ) -> Optional[sqlite3.Row]:
-        conditions: list[str] = []
-        params: list[Any] = []
+        selector_conditions: list[str] = []
+        prefix_conditions: list[str] = []
+        selector_params: list[Any] = []
+        prefix_params: list[Any] = []
 
         if incident_id is not None:
-            conditions.append("incidents.id = ?")
-            params.append(int(incident_id))
+            selector_conditions.append("incidents.id = ?")
+            selector_params.append(int(incident_id))
         if incident_key:
-            conditions.append("incidents.incident_key = ?")
-            params.append(incident_key)
+            selector_conditions.append("incidents.incident_key = ?")
+            selector_params.append(incident_key)
         if ticket_id:
-            conditions.append("incidents.ticket_id = ?")
-            params.append(ticket_id)
+            selector_conditions.append("incidents.ticket_id = ?")
+            selector_params.append(ticket_id)
+        if workspace is not None:
+            prefix_conditions.append("incidents.workspace = ?")
+            prefix_params.append(normalize_workspace(workspace))
         if alert_id:
-            conditions.append(
+            selector_conditions.append(
                 "(incidents.alert_id = ? OR incidents.latest_alert_id = ? OR incident_lookup.alert_id = ?)"
             )
-            params.extend((alert_id, alert_id, alert_id))
+            selector_params.extend((alert_id, alert_id, alert_id))
 
-        if not conditions:
+        if not selector_conditions:
             raise ValueError("At least one incident lookup selector is required.")
+
+        where_clauses = [*prefix_conditions, f"({' OR '.join(selector_conditions)})"]
 
         return conn.execute(
             f"""
             SELECT incidents.*
             FROM incidents
             LEFT JOIN incident_alerts AS incident_lookup ON incident_lookup.incident_id = incidents.id
-            WHERE {' OR '.join(conditions)}
-            GROUP BY incidents.id
-            ORDER BY incidents.updated_at DESC, incidents.id DESC
-            LIMIT 1
-            """,
-            tuple(params),
+            WHERE {' AND '.join(where_clauses)}
+                GROUP BY incidents.id
+                ORDER BY incidents.updated_at DESC, incidents.id DESC
+                LIMIT 1
+                """,
+            (*prefix_params, *selector_params),
         ).fetchone()
 
     def _collect_related_alert_ids(

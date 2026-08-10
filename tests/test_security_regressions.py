@@ -10,6 +10,7 @@ from alert_generator.generator import generate_alert
 from api.schemas import ProcessAlertRequest
 from security import ROLE_INCIDENT_PROCESS, ROLE_INCIDENT_READ, authenticate_token
 from services.workflow_service import SoarWorkflowService
+from scripts.run_pentest import run_pentest
 
 
 def _build_default_auth_tokens() -> list[dict]:
@@ -103,3 +104,16 @@ def test_report_generator_escapes_alert_controlled_html_payloads(tmp_path: Path)
     assert payload not in html_content
     assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in markdown_content
     assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in html_content
+
+
+def test_pentest_runner_forces_mock_integrations(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SOAR_INTEL_PROVIDER", "virustotal")
+    monkeypatch.delenv("VIRUSTOTAL_API_KEY", raising=False)
+
+    summary = run_pentest(
+        tmp_path / "pentest-output",
+        tmp_path / "pentest-report.md",
+    )
+
+    assert summary["finding_count"] == 0
+    assert summary["check_count"] >= 4
