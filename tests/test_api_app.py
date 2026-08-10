@@ -2,6 +2,7 @@ import api.app as api_app
 import pytest
 import sqlite3
 import yaml
+from contextlib import closing
 from datetime import timedelta
 from alert_generator.generator import generate_alert
 from observability import observability
@@ -972,7 +973,7 @@ def test_rollback_reopen_and_escalation_endpoints(tmp_path, monkeypatch, inciden
         principal=incident_operator_principal,
     )
     repository = test_service._repository
-    with sqlite3.connect(test_service.db_path) as conn:
+    with closing(sqlite3.connect(test_service.db_path)) as conn:
         escalation_target = conn.execute(
             """
             SELECT correlation_id

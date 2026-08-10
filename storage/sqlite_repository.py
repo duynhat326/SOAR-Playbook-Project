@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Sequence
 from uuid import uuid4
 
 from schemas.alert import (
@@ -51,8 +52,17 @@ class SQLiteIncidentRepository:
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS alerts (
@@ -384,7 +394,7 @@ class SQLiteIncidentRepository:
             )
         )
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO alerts (
@@ -748,7 +758,7 @@ class SQLiteIncidentRepository:
         )
         approval_state = request.approval_state.value
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO queue_jobs (
@@ -815,7 +825,7 @@ class SQLiteIncidentRepository:
         queue_name: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         timestamp = self._utc_now()
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if queue_name:
                 row = conn.execute(
@@ -915,7 +925,7 @@ class SQLiteIncidentRepository:
         correlation_id: str,
         result: ActionResult,
     ) -> None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT * FROM queue_jobs WHERE correlation_id = ?",
                 (correlation_id,),
@@ -955,7 +965,7 @@ class SQLiteIncidentRepository:
         next_available_at: datetime,
         last_error: str,
     ) -> None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT * FROM queue_jobs WHERE correlation_id = ?",
                 (correlation_id,),
@@ -1005,7 +1015,7 @@ class SQLiteIncidentRepository:
         *,
         last_error: str,
     ) -> None:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT * FROM queue_jobs WHERE correlation_id = ?",
                 (correlation_id,),
@@ -1053,7 +1063,7 @@ class SQLiteIncidentRepository:
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         decision_time = utc_now()
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 SELECT *
@@ -1145,7 +1155,7 @@ class SQLiteIncidentRepository:
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         decision_time = utc_now()
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 SELECT *
@@ -1237,7 +1247,7 @@ class SQLiteIncidentRepository:
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         decision_time = utc_now()
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 SELECT *
@@ -1336,7 +1346,7 @@ class SQLiteIncidentRepository:
         actor: str,
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = self._resolve_incident_row(conn, alert_id=alert_id)
             if row is None:
                 return None
@@ -1385,7 +1395,7 @@ class SQLiteIncidentRepository:
         escalation_time_iso = escalation_time.isoformat()
         affected_alert_ids: list[str] = []
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             rows = conn.execute(
                 """
                 SELECT *
@@ -1473,7 +1483,7 @@ class SQLiteIncidentRepository:
         actor: str,
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = self._resolve_incident_row(conn, alert_id=alert_id)
             if row is None:
                 return None
@@ -1515,7 +1525,7 @@ class SQLiteIncidentRepository:
         body: str,
     ) -> Optional[dict[str, Any]]:
         note = IncidentNote(author=author, body=body)
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = self._resolve_incident_row(conn, alert_id=alert_id)
             if row is None:
                 return None
@@ -1558,7 +1568,7 @@ class SQLiteIncidentRepository:
         comment: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         updated_alert_ids: list[str] = []
-        with self._connect() as conn:
+        with self._connection() as conn:
             for alert_id in alert_ids:
                 row = self._resolve_incident_row(conn, alert_id=alert_id)
                 if row is None:
@@ -1605,7 +1615,7 @@ class SQLiteIncidentRepository:
     ) -> dict[str, Any]:
         timestamp = self._utc_now()
         resolved_workspace = normalize_workspace(workspace)
-        with self._connect() as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO saved_filters (workspace, name, filters_json, created_by, created_at, updated_at)
@@ -1641,7 +1651,7 @@ class SQLiteIncidentRepository:
             for workspace in effective_workspaces(workspaces)
             if workspace != "*"
         )
-        with self._connect() as conn:
+        with self._connection() as conn:
             if scoped_workspaces:
                 placeholders = ", ".join("?" for _ in scoped_workspaces)
                 rows = conn.execute(
@@ -1665,7 +1675,7 @@ class SQLiteIncidentRepository:
 
     def get_queue_metrics(self) -> dict[str, Any]:
         timestamp = self._utc_now()
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 SELECT
@@ -1727,7 +1737,7 @@ class SQLiteIncidentRepository:
         window_start_iso = window_start.isoformat()
         observed_at_iso = observed_at.isoformat()
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             for fingerprint in fingerprints:
                 row = conn.execute(
                     """
@@ -1807,7 +1817,7 @@ class SQLiteIncidentRepository:
         where_clause: str,
         params: tuple[Any, ...],
     ) -> Optional[dict[str, Any]]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 f"""
                 SELECT
@@ -1869,7 +1879,7 @@ class SQLiteIncidentRepository:
                 f"limit must be between 1 and {MAX_INCIDENT_LIST_LIMIT} inclusive"
             )
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             where_clauses: list[str] = []
             params: list[Any] = []
 
@@ -1963,7 +1973,7 @@ class SQLiteIncidentRepository:
             return [dict(row) for row in rows]
 
     def get_incident_metrics(self) -> dict[str, Any]:
-        with self._connect() as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 """
                 SELECT

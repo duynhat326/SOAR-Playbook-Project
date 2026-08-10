@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from datetime import timedelta
 
 import pytest
@@ -77,7 +78,7 @@ def test_sqlite_repository_persists_alert_incident_actions_and_report(tmp_path):
     assert incident["html_path"] == str(result.artifacts.html_path)
     assert len(incident["action_results"]) == len(result.response.action_results)
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         alerts_count = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
         incidents_count = conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
         reports_count = conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
@@ -216,7 +217,7 @@ def test_sqlite_repository_rolls_back_queued_action_and_hashes_audit_chain(tmp_p
     assert action["rollback_requested_by"] == "pytest-analyst"
     assert action["approval_comment"] == "Cancel before containment"
 
-    with sqlite3.connect(tmp_path / "soar.db") as conn:
+    with closing(sqlite3.connect(tmp_path / "soar.db")) as conn:
         conn.row_factory = sqlite3.Row
         queue_row = conn.execute(
             "SELECT status, approval_state, rollback_requested_by FROM queue_jobs WHERE correlation_id = ?",
@@ -277,7 +278,7 @@ def test_sqlite_repository_escalates_overdue_approvals_and_reports_metrics(tmp_p
     incident = repository.get_incident_by_alert_id(alert.alert_id)
     pending_action = next(action for action in incident["action_results"] if action["action"] == "isolate_host")
 
-    with sqlite3.connect(tmp_path / "soar.db") as conn:
+    with closing(sqlite3.connect(tmp_path / "soar.db")) as conn:
         conn.execute(
             """
             UPDATE queue_jobs
@@ -367,7 +368,7 @@ def test_sqlite_repository_rejects_invalid_incident_list_limit(tmp_path):
 def test_sqlite_repository_migrates_legacy_incident_table_before_creating_indexes(tmp_path):
     db_path = tmp_path / "legacy.db"
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.executescript(
             """
             CREATE TABLE alerts (
@@ -412,7 +413,7 @@ def test_sqlite_repository_migrates_legacy_incident_table_before_creating_indexe
 
     repository = SQLiteIncidentRepository(db_path=db_path)
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         columns = {
             row[1]
             for row in conn.execute("PRAGMA table_info(incidents)").fetchall()
