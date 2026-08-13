@@ -37,431 +37,438 @@
 
 ## Background and Goals
 
-This project simulates how a Blue Team or SOC automation flow would handle an endpoint malware alert in a structured, explainable way.
+This project models how a SOC or Blue Team automation flow handles a malware alert from intake to analyst follow-up instead of stopping at a single detection or enrichment step.
 
-Instead of stopping at a single detection rule or a standalone enrichment script, the repo now models a fuller incident-response path:
-
-1. accept an alert from CLI, API, or dashboard
-2. enrich the alert with threat intelligence and asset context
-3. map behavior to MITRE ATT&CK
-4. calculate a normalized risk score
-5. apply policy-driven response actions
-6. generate analyst-readable reports
-7. persist the incident for replay, history, and investigation
-
-The main goal of the project is to show system design, security awareness, and analyst workflow thinking, not just isolated automation snippets.
-
----
+The current repository is structured around a shared orchestration service that powers CLI runs, HTTP processing, dashboard operations, and queued remediation execution. The goal is to show end-to-end incident workflow design, not just isolated scripts.
 
 ## What Is Implemented
 
-The current repo is already beyond a local-only demo. The following areas are working in the project today:
-
 - Shared orchestration through `services/workflow_service.py`
-- FastAPI incident processing and incident history API
-- React dashboard as the primary UI
-- Supabase Postgres as the default runtime persistence target
-- SQLite-backed explicit local/test flows
-- VirusTotal-backed live hash enrichment path
-- Policy-as-data with YAML-backed rule loading
-- Queue-ready execution trace and correlation metadata
-- Idempotent replay for repeated `alert_id` processing
-- Report artifact storage for Markdown, HTML, and optional PDF
-- RBAC-protected incident APIs
-- Security regression coverage for auth, redaction, and HTML report escaping
-
-Recent dashboard improvements completed in this repo:
-
-- real FastAPI-backed alert intake
-- live incident stream and priority queue refresh after `Process Alert`
-- Markdown report preview in incident detail
-- `Open HTML report` action in the detail panel
-- execution trace rendering in the UI
-- enrichment source visibility for hash and IP intel
-- operator-only sensitive detail reads
-- rejection of sanitized/redacted payload re-processing
-
----
+- FastAPI-backed alert processing and incident APIs in `api/app.py`
+- React dashboard as the primary analyst UI in `dashboard/src/`
+- Queue-capable remediation execution via `scripts/run_remediation_worker.py`
+- Threat enrichment for file hashes, IPs, asset criticality, and MITRE ATT&CK mappings
+- Policy-as-data evaluation through `policies/response_rules.yaml`
+- Incident correlation, reporting, persistence, replay, notes, approvals, and saved filters
+- Runtime-selectable SQLite and Postgres persistence paths
+- Docker, GitHub Actions CI, and release-compose deployment assets
 
 ## End-to-End Workflow
 
-The pipeline currently works like this:
-
-### 1. Alert intake
-
-The system accepts a malware alert payload with fields such as:
-
-- `alert_id`
-- `hostname`
-- `username`
-- `process_name`
-- `file_path`
-- `file_hash`
-- `parent_process`
-- `command_line`
-- `destination_ip`
-- `severity`
-- `detection_name`
-
-### 2. Threat enrichment
-
-The workflow enriches:
-
-- file hash intelligence
-- destination IP intelligence
-- asset criticality
-- MITRE ATT&CK mappings
-
-Hash enrichment can run against VirusTotal when:
-
-```env
-SOAR_INTEL_PROVIDER=virustotal
-VIRUSTOTAL_API_KEY=...
-```
-
-### 3. Risk scoring
-
-The enriched alert is scored and normalized into a risk level such as:
-
-- `low`
-- `medium`
-- `high`
-- `critical`
-
-### 4. Policy evaluation
-
-The policy engine evaluates response rules and produces:
-
-- triggered actions
-- action results
-- policy reasoning
-- execution trace
-
-### 5. Response actions
-
-Depending on the scenario, the flow can:
-
-- isolate host
-- kill process
-- block IP
-- escalate
-- create ticket
-- notify SOC
-
-### 6. Report generation
-
-The system can generate:
-
-- Markdown report
-- HTML report
-- PDF report when supported
-
-### 7. Persistence and replay
-
-The incident, action results, and report metadata are stored so the analyst can reopen them later from the dashboard or API.
-
----
+1. Alerts enter through the CLI, FastAPI, or normalized source payloads.
+2. `SoarWorkflowService` resolves workspace context and checks for replay by `alert_id`.
+3. `EnrichmentPipeline` performs hash, IP, CMDB, MITRE, and risk-scoring steps.
+4. `PolicyEngine` evaluates YAML policy rules and either executes actions immediately or queues them.
+5. `IncidentCorrelationService` decides whether the alert creates a new incident or attaches to an existing one.
+6. `ReportGenerator` writes Markdown, HTML, and optional PDF artifacts.
+7. The incident repository persists alerts, incidents, actions, queue jobs, reports, notes, audit data, and filters.
+8. In queued mode, `AsyncRemediationWorker` claims queue jobs and executes deferred remediation actions.
 
 ## Current Architecture
 
-```text
-+--------------------------------------------------------------------------------------+
-|                               SOAR Playbook Architecture                             |
-+--------------------------------------------------------------------------------------+
-| Entry points                                                                         |
-|                                                                                      |
-|   main.py                     api/app.py                   dashboard/src              |
-|   CLI                         FastAPI                      React analyst console      |
-|      \                           |                                /                  |
-|       \                          |                               /                   |
-|        +-------------------------+------------------------------+                    |
-|                                  |                                                   |
-|                     services/workflow_service.py                                      |
-|                     Shared orchestration layer                                        |
-|                                  |                                                   |
-+----------------------------------+---------------------------------------------------+
-| Enrichment and analysis          | Policy and response       | Output and storage     |
-|                                  |                           |                        |
-| enrichment/hash_intel.py         | engine/policy_loader.py   | reporting/report_      |
-| enrichment/ip_intel.py           | engine/policy_engine.py   | generator.py           |
-| enrichment/asset_db.py           | engine/action_dispatcher  | storage/incident_      |
-| enrichment/mitre_mapping.py      | actions/*                 | repository.py          |
-| engine/risk_scoring.py           |                           | storage/postgres.py    |
-|                                  |                           | storage/sqlite_        |
-|                                  |                           | repository.py          |
-+----------------------------------+---------------------------+------------------------+
-| Security                                                                              |
-|                                                                                      |
-| security/auth.py                 RBAC, bearer auth, redaction defaults               |
-+--------------------------------------------------------------------------------------+
-| Primary UI: React dashboard                                                           |
-| Legacy UI kept only for reference: dashboard/app.py                                   |
-| Default runtime persistence: Supabase/Postgres                                        |
-| Explicit local/test persistence: SQLite                                               |
-+--------------------------------------------------------------------------------------+
-```
+![SOAR System Architecture](docs/SOAR%20Architecture.png)
 
-### Entry points
+More detailed diagrams are in `docs/architecture.md`.
+
+The main runtime entrypoints are:
 
 - `main.py`
 - `api/app.py`
-- `dashboard/src/`
+- `dashboard/src/main.tsx`
+- `scripts/run_remediation_worker.py`
 
-### Shared orchestration
-
-- `services/workflow_service.py`
-
-This service is the main coordination layer reused by CLI, API, and dashboard flows.
-
-### Main backend domains
-
-- `enrichment/` for threat intel, MITRE mapping, and asset context
-- `engine/` for scoring, policy loading, and policy evaluation
-- `actions/` for response execution
-- `reporting/` for report generation
-- `storage/` for repositories and persistence adapters
-- `security/` for auth and RBAC
-
-### Persistence path
-
-- default runtime: Supabase/Postgres
-- explicit local/test path: SQLite when a local database target is passed on purpose
-
-### UI model
-
-- primary UI: `dashboard/src/`
-- legacy UI: `dashboard/app.py`
-
-`dashboard/app.py` is kept only as a legacy reference and is no longer the main dashboard experience.
-
----
+`dashboard/app.py` still exists as a legacy Streamlit UI, but it is not the primary frontend, not part of the Docker build, and not used by CI.
 
 ## React Dashboard
 
-The React dashboard is now the main analyst console for the project.
-
-### Main panels
-
-- Alert Intake
-- Priority Queue
-- Incident Stream
-- Incident Detail
-
-### Incident detail view
-
-The detail panel currently shows:
-
-- risk summary
-- host and process context
-- threat telemetry
-- automated response results
-- policy reasoning
-- MITRE ATT&CK coverage
-- execution trace
-- report artifact paths
-- Markdown report preview
-- HTML report link
-- raw alert payload
-
-### Dev proxy model
-
-The dashboard uses the FastAPI backend through the Vite proxy in `dashboard/vite.config.ts`.
-
-That local proxy:
-
-- reads repo-root `.env.local`
-- forwards `/soar-api/*` to FastAPI
-- forwards the browser's `Authorization` header unchanged
-
-The dashboard now expects each browser tab to carry its own bearer token in `sessionStorage`, so the proxy no longer injects a shared operator credential.
-
----
+- Primary frontend: `dashboard/src/`
+- Dev path: Vite server with `/soar-api` proxying to FastAPI
+- Hosted proxy path: `dashboard/api/` for Vercel-style deployments
+- Docker path: static Vite build served by Nginx
+- Analyst capabilities: intake, incident queue review, case updates, notes, approvals, reopen, report viewing, and saved filters
+- Auth model: bearer token stored in browser `sessionStorage` and forwarded by the proxy
 
 ## Security and Sensitive Data Handling
 
-Bearer-token auth is required for protected API routes.
-
-### Incident roles
-
-- `incident_process`
-- `incident_read`
-
-### Redaction behavior
-
-Sensitive incident fields are still redacted by default in API-facing incident detail responses:
-
-- `username`
-- `command_line`
-- `file_hash`
-- `file_path`
-
-### Operator-only access
-
-The React dashboard now reads incident detail with `include_sensitive=true`, but only principals with `incident_process` are allowed to access that path. Read-only principals still receive redacted values.
-
-### Intake guardrail
-
-Sanitized dashboard/API output is now rejected if someone tries to process it again as a fresh alert.
-
-This prevents incorrect re-processing of payloads that already contain values such as:
-
-- `[redacted]`
-- `[redacted-path]`
-- zeroed hashes like `0000...`
-
-To get correct enrichment and policy results, the intake form must receive the original raw alert JSON.
-
----
+- Bearer authentication is configured through `SOAR_AUTH_TOKENS_JSON`.
+- API routes enforce RBAC through `incident_read` and `incident_process` roles.
+- Workspace scoping is enforced in `security/auth.py` and `workspace_utils.py`.
+- Incident detail is redacted by default; operator-capable principals can request `include_sensitive=true`.
+- HTML reports are served from the repository `output/` tree through a constrained path check in `api/app.py`.
+- The frontend no longer injects a shared service credential; it forwards the browser session token instead.
 
 ## Persistence Model
 
-Default runtime persistence expects Supabase/Postgres.
+- If `SOAR_DB_TARGET` points to a file path, the app uses SQLite.
+- If `SOAR_DB_TARGET` is a Postgres DSN, the app uses Postgres.
+- If `SOAR_DB_TARGET` is unset, the app tries `SOAR_DATABASE_URL`, then `SUPABASE_DB_URL`, then falls back to `SOAR_SQLITE_FALLBACK_PATH`.
+- SQLite currently has the most complete analyst workflow support.
+- The Postgres repository currently supports ingestion, read/list flows, and queue persistence, but several analyst mutation methods are still not implemented.
 
-Stored entities include:
+## Features
 
-- alerts
-- incidents
-- action results
-- reports
+- Canonical malware-alert intake for CLI, API, and normalized external source payloads
+- Threat enrichment for file hashes and IPs, including optional VirusTotal-backed lookups
+- Asset criticality and CMDB context enrichment
+- MITRE ATT&CK mapping and weighted risk scoring
+- Policy-as-data evaluation from `policies/response_rules.yaml`
+- Synchronous, queued, and dry-run execution modes
+- Approval-aware remediation queue with retry and dead-letter behavior
+- Incident correlation and incident re-open/attach logic
+- Markdown, HTML, and optional PDF report generation
+- SQLite and Postgres persistence paths
+- Full analyst mutation workflow on SQLite, with a partial Postgres implementation
+- Role-based API access with workspace scoping
+- React dashboard for intake, queue review, incident detail, notes, approvals, and saved filters
+- Docker, GitHub Actions CI, and remote release-compose deployment assets
 
-Important behavior already implemented:
+## Technology Stack
 
-- repeated processing of the same `alert_id` is idempotent
-- missing report artifacts can be materialized on replay
-- incident detail reads can hydrate Markdown content from stored report paths
+- Backend: Python 3.13, FastAPI, Pydantic v2, Loguru
+- Frontend: React 18, TypeScript, Vite
+- Persistence: SQLite and Postgres via `psycopg`
+- Reporting: `markdown2`, optional `weasyprint`
+- Testing: `pytest`, Playwright smoke tests
+- Deployment: Docker, Docker Compose, GitHub Actions
+- Security model: bearer-token RBAC with workspace scoping
 
----
+## Project Structure
+
+```text
+.
+├── actions/                Local mock remediation and ticketing adapters
+├── alert_generator/        Synthetic alert generation for scenarios and tests
+├── api/                    FastAPI application and response schemas
+├── config/environments/    Docker and deployment env profiles
+├── dashboard/              React frontend, Vercel proxy handlers, legacy Streamlit app
+├── data/                   Sample alerts, mock intel/CMDB data, source replay fixtures
+├── docker/                 Backend and dashboard Dockerfiles plus Nginx config
+├── docs/                   Design notes, deployment notes, security notes, architecture docs
+├── engine/                 Policy loader, policy engine, dispatcher, risk scoring, replay helpers
+├── enrichment/             Threat-intel, asset, MITRE, and enrichment orchestration
+├── integrations/           Connector protocols and provider factories
+├── migrations/postgres/    Ordered SQL migrations for Postgres deployments
+├── observability/          Metrics, traces, resilience, connector wrappers
+├── policies/               YAML policy config and replay fixtures
+├── reporting/              Incident report generation
+├── schemas/                Domain schemas for alerts, responses, queue items, and incidents
+├── scripts/                Worker, migrations, replay, pentest, validation, deployment helpers
+├── security/               Authentication and authorization helpers
+├── services/               Workflow orchestration, readiness, queue worker, incident correlation
+├── storage/                Repository implementations for SQLite and Postgres
+├── tests/                  Backend test suite
+├── main.py                 CLI entrypoint
+├── start-local.ps1         Local dev stack launcher
+└── stop-local.ps1          Local dev stack shutdown helper
+```
+
+## System Architecture
+
+### Request flow
+
+1. An alert enters through the CLI, FastAPI, or a source connector.
+2. `SoarWorkflowService` normalizes workspace context and checks for replay/idempotency by `alert_id`.
+3. `EnrichmentPipeline` resolves hash intel, IP intel, asset criticality, asset metadata, MITRE mappings, and risk scoring.
+4. `PolicyEngine` evaluates YAML policy rules and either executes actions immediately or queues them.
+5. `IncidentCorrelationService` decides whether the alert becomes a new incident or is attached to an existing one.
+6. `ReportGenerator` writes Markdown, HTML, and optionally PDF artifacts.
+7. `IncidentRepository` persists alerts, incidents, actions, notes, audit data, reports, queue jobs, and saved filters.
+8. In queued mode, `AsyncRemediationWorker` claims jobs from the repository and executes queued remediation actions.
+
+### Repository selection
+
+- If `SOAR_DB_TARGET` is a filesystem path, the app uses SQLite.
+- If `SOAR_DB_TARGET` is a Postgres DSN, the app uses Postgres.
+- If `SOAR_DB_TARGET` is unset, the app first tries `SOAR_DATABASE_URL`, then `SUPABASE_DB_URL`, and finally falls back to `SOAR_SQLITE_FALLBACK_PATH`.
+
+### Current persistence limitation
+
+SQLite currently has the most complete analyst workflow support. The Postgres repository implementation supports workflow ingestion, listing, readback, and queue persistence, but case mutations, notes, approvals, reopen, bulk update, and saved-filter writes are still marked `NotImplemented` in `storage/incident_repository.py`.
+
+### Frontend model
+
+- Development mode uses the Vite dev server with `/soar-api` proxying.
+- Vercel deployments use `dashboard/api/*` handlers as proxy functions.
+- Docker dashboard builds a static Vite bundle and serves it through Nginx.
+- The dashboard stores the bearer token in `sessionStorage` for the current browser tab.
 
 ## Setup and Run
 
-### 1. Install Python dependencies
+### Backend
 
 ```bash
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Install dashboard dependencies
+### Frontend
 
 ```bash
 npm --prefix dashboard install
 ```
 
-### 3. Configure environment
+### Environment
 
-Create a local `.env.local` from `.env.example` and set at least:
+Choose one of these approaches:
 
-```env
-SUPABASE_DB_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
-SOAR_INTEL_PROVIDER=virustotal
-VIRUSTOTAL_API_KEY=
-SOAR_AUTH_TOKENS_JSON={"tokens":[{"token":"<generate-a-long-random-token>","principal_id":"incident-operator","principal_type":"user","roles":["incident_process","incident_read"],"workspaces":["*"]}]}
-SOAR_API_PROXY_TARGET=http://127.0.0.1:8000
+- Local quick start: create `.env.local` at the repo root
+- Docker local profile: use `config/environments/development.env`
+- Staging or production template: copy the matching file from `config/environments/`
+
+You can validate env profiles with:
+
+```bash
+python scripts/validate_env.py config/environments/development.env
 ```
 
-### 4. Run FastAPI
+## Environment Variables
+
+### Core runtime
+
+| Variable | Purpose | Required when |
+| --- | --- | --- |
+| `SOAR_ENVIRONMENT` | Environment label used by profiles and docs | Profile-based deployments |
+| `SOAR_DB_TARGET` | Explicit SQLite path or Postgres DSN | Required if you do not want repository auto-selection |
+| `SOAR_DATABASE_URL` | Preferred Postgres DSN | Postgres runtime |
+| `SUPABASE_DB_URL` | Fallback Postgres DSN | Postgres runtime if `SOAR_DATABASE_URL` is unset |
+| `SOAR_SQLITE_FALLBACK_PATH` | SQLite fallback path | Optional, defaults to `output/soar-local.db` |
+
+### Connectors and providers
+
+| Variable | Purpose |
+| --- | --- |
+| `SOAR_SOURCE_PROVIDER` or `SOAR_SOURCE_CONNECTOR` | Source normalization provider (`passthrough`, `wazuh`, `microsoft_defender`) |
+| `SOAR_ACTION_PROVIDER` | Remediation action provider |
+| `SOAR_TICKETING_CONNECTOR` | Ticketing connector factory selector |
+| `SOAR_TICKETING_PROVIDER` | Local ticket backend (`json`, `webhook`) |
+| `SOAR_TICKETING_WEBHOOK_URL` | Ticketing webhook endpoint |
+| `SOAR_TICKETING_WEBHOOK_TOKEN` | Ticketing webhook credential |
+| `SOAR_TICKETING_JSON_PATH` | Local JSON ticket store path |
+| `SOAR_ASSET_PROVIDER` | Asset provider (`mock`, `file`, `http`) |
+| `SOAR_ASSET_DB_PATH` | Asset file path for the file-backed provider |
+| `SOAR_ASSET_API_URL` | HTTP CMDB endpoint |
+| `SOAR_ASSET_API_TOKEN` | HTTP CMDB credential |
+| `SOAR_INTEL_PROVIDER` | Threat-intel provider (`mock`, `virustotal`) |
+| `VIRUSTOTAL_API_KEY` | VirusTotal credential |
+
+### API, auth, and frontend
+
+| Variable | Purpose |
+| --- | --- |
+| `SOAR_API_CORS_ORIGINS` | Comma-separated CORS allowlist |
+| `SOAR_AUTH_TOKENS_JSON` | Bearer token map with roles and workspaces |
+| `SOAR_AUTH_TOKEN` | CLI auth token helper for auth-aware scripts |
+| `SOAR_API_PROXY_TARGET` | Upstream API base for Vite or Vercel proxy handlers |
+| `VITE_SOAR_API_BASE_URL` | Explicit frontend API base path or URL |
+
+### Queue and observability tuning
+
+| Variable | Purpose |
+| --- | --- |
+| `SOAR_POLICY_EXECUTION_MODE` | `sync`, `queued`, or `dry_run` |
+| `SOAR_APPROVAL_REQUIRED_ACTIONS` | Comma-separated actions that require approval |
+| `SOAR_POLICY_QUEUE_NAME` | Queue name override |
+| `SOAR_POLICY_CORRELATION_PREFIX` | Queue correlation prefix override |
+| `SOAR_POLICY_QUEUE_FALLBACK_TO_SYNC` | Whether queue mode falls back to sync execution |
+| `SOAR_REMEDIATION_MAX_ATTEMPTS` | Worker retry limit |
+| `SOAR_REMEDIATION_POLL_INTERVAL_SEC` | Worker polling interval |
+| `SOAR_REMEDIATION_RETRY_BASE_SEC` | Base retry backoff |
+| `SOAR_REMEDIATION_RETRY_MAX_SEC` | Max retry backoff |
+| `SOAR_OBSERVABILITY_LOG_PATH` | Structured observability log path |
+
+## Development
+
+### One-command local startup
+
+```powershell
+.\start-local.ps1
+```
+
+This script:
+
+- checks ports
+- starts FastAPI with queued policy execution
+- starts the remediation worker
+- starts the Vite dashboard
+- probes backend and dashboard health
+
+Stop the local stack with:
+
+```powershell
+.\stop-local.ps1
+```
+
+### Manual development
+
+Backend:
 
 ```bash
 python -m uvicorn api.app:app --reload
 ```
 
-### 5. Run the React dashboard
+Worker:
+
+```bash
+python scripts/run_remediation_worker.py
+```
+
+Dashboard:
 
 ```bash
 npm --prefix dashboard run dev
 ```
 
-When the dashboard opens, paste the operator bearer token into the session prompt shown in the UI. The token is stored only in that browser tab's `sessionStorage`.
-
-### 6. Optional CLI smoke run
+CLI:
 
 ```bash
-python main.py --scenario mixed --no-report
+python main.py --scenario mixed
+python main.py --alert data/sample_alerts/alert_04_full_critical.json
 ```
 
-### 7. Run tests
+## Verification Snapshot
+
+Current validation status from the latest repository audit:
+
+- Backend static validation: PASS
+- Backend tests: PASS (`131 passed`)
+- Frontend build: PASS
+- Frontend smoke tests: PASS
+- API startup smoke: PASS
+- Lint: N/A (no dedicated lint command is defined in the repo)
+- Typecheck: PASS (covered by the dashboard build script)
+
+Commands used for verification:
+
+Backend tests:
 
 ```bash
-pytest tests -q
+pytest -q
 ```
 
----
+Static validation:
+
+```bash
+python -m compileall api actions alert_generator engine enrichment integrations observability reporting schemas security services storage scripts
+```
+
+Dashboard build and smoke tests:
+
+```bash
+npm --prefix dashboard run build
+npm --prefix dashboard run test:smoke
+```
+
+## Build
+
+Frontend production bundle:
+
+```bash
+npm --prefix dashboard run build
+```
+
+Backend Docker image:
+
+```bash
+docker build --target api -f docker/Dockerfile.backend -t soar-api:test .
+```
+
+Worker Docker image:
+
+```bash
+docker build --target worker -f docker/Dockerfile.backend -t soar-worker:test .
+```
+
+Dashboard Docker image:
+
+```bash
+docker build -f docker/Dockerfile.dashboard --build-arg VITE_SOAR_API_BASE_URL=/soar-api -t soar-dashboard:test .
+```
+
+## Deployment
+
+### Local Compose
+
+SQLite-backed default profile:
+
+```bash
+docker compose up --build
+```
+
+Bundled-Postgres profile:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml --profile postgres up --build -d
+python scripts/apply_postgres_migrations.py
+```
+
+### Release Compose
+
+Release rollout is driven by:
+
+- `docker-compose.release.yml`
+- optional `docker-compose.release.postgres.yml`
+- `scripts/deploy_remote_compose.sh`
+- `.github/workflows/deploy.yml`
+
+The release compose profile pulls prebuilt GHCR images for API, worker, and dashboard. Optional Postgres migration runs happen through the `migrate` service.
 
 ## Main API Routes
 
-Core incident routes:
+### Base URL
+
+- Local backend: `http://127.0.0.1:8000`
+- Local dashboard proxy: `http://127.0.0.1:5173/soar-api`
+
+### Authentication
+
+Protected routes require:
+
+```text
+Authorization: Bearer <token>
+```
+
+Roles used by the API:
+
+- `incident_read`
+- `incident_process`
+
+### Main endpoints
 
 - `GET /health`
+- `GET /api/v1/ready`
+- `GET /api/v1/observability`
 - `GET /api/v1/dashboard/bootstrap`
 - `POST /api/v1/incidents/process`
 - `POST /api/v1/incidents/process-scenario`
 - `GET /api/v1/incidents`
+- `POST /api/v1/incidents/bulk-update`
+- `GET /api/v1/incidents/saved-filters`
+- `POST /api/v1/incidents/saved-filters`
 - `GET /api/v1/incidents/by-alert/{alert_id}`
+- `PATCH /api/v1/incidents/by-alert/{alert_id}`
+- `POST /api/v1/incidents/by-alert/{alert_id}/notes`
+- `POST /api/v1/incidents/by-alert/{alert_id}/actions/{correlation_id}/approve`
+- `POST /api/v1/incidents/by-alert/{alert_id}/actions/{correlation_id}/reject`
+- `POST /api/v1/incidents/by-alert/{alert_id}/actions/{correlation_id}/rollback`
+- `POST /api/v1/incidents/by-alert/{alert_id}/reopen`
+- `POST /api/v1/approvals/escalate-overdue`
 - `GET /api/v1/incidents/by-alert/{alert_id}/report/html`
 - `GET /api/v1/incidents/by-ticket/{ticket_id}`
 
-Important route behavior:
+## Security
 
-- `GET /api/v1/incidents/by-alert/{alert_id}?include_sensitive=true`
-  - allowed for `incident_process`
-  - denied for read-only principals
-- `POST /api/v1/incidents/process`
-  - rejects sanitized/redacted payloads with HTTP `422`
+- Authentication is bearer-token based and configured from `SOAR_AUTH_TOKENS_JSON`.
+- Authorization is role-based and workspace-scoped through `security/auth.py` and `workspace_utils.py`.
+- Sensitive incident detail is redacted by default and only returned in full when `include_sensitive=true` is requested by a principal with `incident_process`.
+- Report artifact paths are constrained to the repository `output/` tree before FastAPI serves them.
+- The dashboard no longer injects a shared backend credential; it forwards the browser session token through the proxy.
+- `dashboard/vercel.json` applies CSP, frame protection, referrer policy, and permissions policy headers for Vercel-hosted frontend deployments.
 
----
+## Troubleshooting
 
-## Project Structure
-
-```text
-SOAR Playbook/
-|-- actions/
-|-- alert_generator/
-|-- api/
-|-- dashboard/
-|   |-- app.py
-|   |-- src/
-|   `-- vite.config.ts
-|-- data/
-|   `-- sample_alerts/
-|-- docs/
-|-- engine/
-|-- enrichment/
-|-- output/
-|-- policies/
-|-- reporting/
-|-- schemas/
-|-- security/
-|-- services/
-|-- storage/
-|-- tests/
-|-- .env.example
-|-- main.py
-`-- README.md
-```
-
----
-
-## Verification Snapshot
-
-Latest verified in this repo on 2026-08-08:
-
-- `pytest tests -q` -> `71 passed`
-- `cmd /c npm run build` in `dashboard/` -> passed
-- live Supabase persistence path verified through incident processing
-- live VirusTotal-backed enrichment path exercised in the workflow
-
-Recommended companion docs:
-
-- `docs/supabase-setup.md`
-- `docs/production-roadmap.md`
-- `docs/upgrade-roadmap.md`
-- `docs/pentest-report-2026-07-02.md`
-
----
-
-## Notes Before Adding New Work
-
-If you are about to process a custom alert through the dashboard:
-
-- use the original raw alert JSON
-- do not paste incident detail output that already shows `[redacted]` fields or a zeroed hash
-- if you need to re-test an existing incident, clone the original source payload instead of copying the redacted detail view
+- `SOAR_AUTH_TOKENS_JSON is not configured`: add a token map before using protected API routes.
+- Dashboard loads but API calls fail: verify the bearer token, backend startup, and `SOAR_API_PROXY_TARGET` or `VITE_SOAR_API_BASE_URL`.
+- Queue-based actions never complete: start `scripts/run_remediation_worker.py` or switch `SOAR_POLICY_EXECUTION_MODE` back to `sync`.
+- Postgres runtime fails to initialize: confirm `SOAR_DATABASE_URL` or `SUPABASE_DB_URL`, then run `python scripts/apply_postgres_migrations.py`.
+- Readiness shows degraded threat intel: set `VIRUSTOTAL_API_KEY` or switch `SOAR_INTEL_PROVIDER=mock`.
