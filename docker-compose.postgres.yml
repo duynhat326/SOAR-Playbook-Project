@@ -2,7 +2,7 @@ services:
   api:
     environment:
       SOAR_DB_TARGET: ""
-      SOAR_DATABASE_URL: postgresql://soar:soar@postgres:5432/soar
+      SOAR_DATABASE_URL: postgresql://soar:${SOAR_POSTGRES_PASSWORD:?set SOAR_POSTGRES_PASSWORD}@postgres:5432/soar
     depends_on:
       postgres:
         condition: service_healthy
@@ -10,7 +10,7 @@ services:
   worker:
     environment:
       SOAR_DB_TARGET: ""
-      SOAR_DATABASE_URL: postgresql://soar:soar@postgres:5432/soar
+      SOAR_DATABASE_URL: postgresql://soar:${SOAR_POSTGRES_PASSWORD:?set SOAR_POSTGRES_PASSWORD}@postgres:5432/soar
     depends_on:
       postgres:
         condition: service_healthy

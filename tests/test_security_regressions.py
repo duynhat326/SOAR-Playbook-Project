@@ -129,3 +129,30 @@ def test_readiness_never_returns_database_password():
 
     assert "S3cretPassw0rd" not in str(repository_dependency)
     assert "aws-0-x.pooler.supabase.com:5432/postgres" in repository_dependency["detail"]
+
+
+def test_api_rejects_oversized_request_body():
+    import asyncio
+
+    sent: list[dict] = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/v1/incidents/process",
+        "raw_path": b"/api/v1/incidents/process",
+        "query_string": b"",
+        "headers": [(b"content-length", str(api_app._MAX_BODY_BYTES + 1).encode())],
+        "client": ("127.0.0.1", 1),
+        "server": ("test", 80),
+        "scheme": "http",
+    }
+    asyncio.run(api_app.app(scope, receive, send))
+
+    assert sent[0]["status"] == 413

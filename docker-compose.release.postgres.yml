@@ -2,7 +2,7 @@ services:
   api:
     environment:
       SOAR_DB_TARGET: ""
-      SOAR_DATABASE_URL: postgresql://${SOAR_POSTGRES_USER:-soar}:${SOAR_POSTGRES_PASSWORD:-soar}@postgres:5432/${SOAR_POSTGRES_DB:-soar}
+      SOAR_DATABASE_URL: postgresql://${SOAR_POSTGRES_USER:-soar}:${SOAR_POSTGRES_PASSWORD:?set SOAR_POSTGRES_PASSWORD}@postgres:5432/${SOAR_POSTGRES_DB:-soar}
     depends_on:
       postgres:
         condition: service_healthy
@@ -10,7 +10,7 @@ services:
   worker:
     environment:
       SOAR_DB_TARGET: ""
-      SOAR_DATABASE_URL: postgresql://${SOAR_POSTGRES_USER:-soar}:${SOAR_POSTGRES_PASSWORD:-soar}@postgres:5432/${SOAR_POSTGRES_DB:-soar}
+      SOAR_DATABASE_URL: postgresql://${SOAR_POSTGRES_USER:-soar}:${SOAR_POSTGRES_PASSWORD:?set SOAR_POSTGRES_PASSWORD}@postgres:5432/${SOAR_POSTGRES_DB:-soar}
     depends_on:
       postgres:
         condition: service_healthy
@@ -18,7 +18,7 @@ services:
   migrate:
     environment:
       SOAR_DB_TARGET: ""
-      SOAR_DATABASE_URL: postgresql://${SOAR_POSTGRES_USER:-soar}:${SOAR_POSTGRES_PASSWORD:-soar}@postgres:5432/${SOAR_POSTGRES_DB:-soar}
+      SOAR_DATABASE_URL: postgresql://${SOAR_POSTGRES_USER:-soar}:${SOAR_POSTGRES_PASSWORD:?set SOAR_POSTGRES_PASSWORD}@postgres:5432/${SOAR_POSTGRES_DB:-soar}
     depends_on:
       postgres:
         condition: service_healthy
@@ -30,9 +30,9 @@ services:
     environment:
       POSTGRES_DB: ${SOAR_POSTGRES_DB:-soar}
       POSTGRES_USER: ${SOAR_POSTGRES_USER:-soar}
-      POSTGRES_PASSWORD: ${SOAR_POSTGRES_PASSWORD:-soar}
+      POSTGRES_PASSWORD: ${SOAR_POSTGRES_PASSWORD:?set SOAR_POSTGRES_PASSWORD}
     ports:
-      - "${SOAR_POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${SOAR_POSTGRES_PORT:-5432}:5432"
     volumes:
       - soar_postgres:/var/lib/postgresql/data
     healthcheck:

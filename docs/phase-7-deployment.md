@@ -39,7 +39,7 @@ Default local credentials come from `config/environments/development.env`:
 Start the stack with the Postgres override:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml --profile postgres up --build -d
+SOAR_POSTGRES_PASSWORD=<choose-a-password> docker compose -f docker-compose.yml -f docker-compose.postgres.yml --profile postgres up --build -d
 ```
 
 Apply schema migrations:

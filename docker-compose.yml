@@ -62,9 +62,7 @@ services:
     environment:
       POSTGRES_DB: soar
       POSTGRES_USER: soar
-      POSTGRES_PASSWORD: soar
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${SOAR_POSTGRES_PASSWORD:?set SOAR_POSTGRES_PASSWORD to start the postgres profile}
     volumes:
       - soar_postgres:/var/lib/postgresql/data
     healthcheck:

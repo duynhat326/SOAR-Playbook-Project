@@ -7,9 +7,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from alert_generator.generator import generate_alert
 from api.schemas import (
@@ -78,6 +78,18 @@ app = FastAPI(
     version="2.0.0",
     summary="HTTP API for malware alert processing and response orchestration.",
 )
+
+_MAX_BODY_BYTES = int(os.getenv("SOAR_API_MAX_BODY_BYTES", str(1024 * 1024)))
+
+
+@app.middleware("http")
+async def _limit_body_size(request: Request, call_next):
+    # shortcut: only checks Content-Length; chunked uploads are capped by nginx (client_max_body_size).
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > _MAX_BODY_BYTES:
+        return JSONResponse({"detail": "Request body too large."}, status_code=413)
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,

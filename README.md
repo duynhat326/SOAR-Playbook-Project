@@ -469,7 +469,7 @@ If `config/environments/local.env` exists it is loaded after `development.env`, 
 Bundled-Postgres profile:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.yml --profile postgres up --build -d
+SOAR_POSTGRES_PASSWORD=<choose-a-password> docker compose -f docker-compose.yml -f docker-compose.postgres.yml --profile postgres up --build -d
 python3 scripts/apply_postgres_migrations.py
 ```
 

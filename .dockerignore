@@ -15,3 +15,13 @@ repo_tree.json
 challenges_bundle.js
 *.sqlite
 *.db
+# Secrets must never be baked into images (Dockerfile.backend does COPY . /app)
+.env
+.env.*
+!.env.example
+config/environments/*.env
+!config/environments/development.env
+graphify-out
+.claude
+*.pem
+*.key

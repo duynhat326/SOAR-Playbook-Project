@@ -54,6 +54,8 @@ jobs:
         run: npm --prefix dashboard run build
 
       - name: Render Docker Compose config
+        env:
+          SOAR_POSTGRES_PASSWORD: ci-render-only
         run: docker compose -f docker-compose.yml -f docker-compose.postgres.yml --profile postgres config > /tmp/soar-compose.rendered.yml
 
       - name: Build API image
