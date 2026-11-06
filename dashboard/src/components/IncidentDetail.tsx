@@ -15,6 +15,17 @@ interface IncidentDetailProps {
   onReopenIncident: (comment?: string) => void;
 }
 
+type DetailTab = "response" | "case" | "intel" | "trace" | "audit" | "raw";
+
+const DETAIL_TABS: { id: DetailTab; label: string }[] = [
+  { id: "response", label: "Response & approvals" },
+  { id: "case", label: "Case" },
+  { id: "intel", label: "Threat intel" },
+  { id: "trace", label: "Trace & report" },
+  { id: "audit", label: "Audit" },
+  { id: "raw", label: "Raw data" },
+];
+
 function present(value: string | null | undefined, fallback = "Not set"): string {
   return value && value.trim().length > 0 ? value : fallback;
 }
@@ -283,6 +294,7 @@ export function IncidentDetail({
   const [noteDraft, setNoteDraft] = useState("");
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const [openingReport, setOpeningReport] = useState(false);
+  const [activeTab, setActiveTab] = useState<DetailTab>("response");
 
   useEffect(() => {
     setCaseOwnerDraft(incident?.case_owner ?? "");
@@ -364,7 +376,7 @@ export function IncidentDetail({
   };
 
   return (
-    <section className="panel detail-panel">
+    <section className="panel detail-panel" data-active-tab={activeTab}>
       <div className="section-head">
         <div>
           <span className="eyebrow">Deep dive</span>
@@ -388,7 +400,23 @@ export function IncidentDetail({
         ))}
       </div>
 
-      <div className="detail-grid detail-grid-expanded">
+      <div aria-label="Incident sections" className="detail-tabs" role="tablist">
+        {DETAIL_TABS.map((tab) => (
+          <button
+            aria-selected={activeTab === tab.id}
+            className={`detail-tab ${activeTab === tab.id ? "is-active" : ""}`}
+            id={`detail-tab-${tab.id}`}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            role="tab"
+            type="button"
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="detail-grid detail-grid-expanded" data-tab="case" role="tabpanel">
         <article className="soft-card">
           <strong className="card-title">Case management</strong>
           <div className="case-editor-grid">
@@ -575,7 +603,7 @@ export function IncidentDetail({
         </article>
       </div>
 
-      <div className="detail-grid detail-grid-expanded">
+      <div className="detail-grid detail-grid-expanded" data-tab="response" role="tabpanel">
         <article className="soft-card">
           <strong className="card-title">Asset and risk model</strong>
           <div className="key-grid">
@@ -723,7 +751,7 @@ export function IncidentDetail({
         </article>
       </div>
 
-      <div className="detail-grid detail-grid-expanded">
+      <div className="detail-grid detail-grid-expanded" data-tab="intel" role="tabpanel">
         <article className="soft-card">
           <strong className="card-title">Hash intelligence</strong>
           {hash ? (
@@ -853,7 +881,7 @@ export function IncidentDetail({
         </article>
       </div>
 
-      <article className="soft-card">
+      <article className="soft-card" data-tab="intel" role="tabpanel">
         <strong className="card-title">MITRE ATT&amp;CK coverage</strong>
         {incident.enriched_alert.mitre_mappings.length > 0 ? (
           <div className="mitre-grid">
@@ -874,7 +902,7 @@ export function IncidentDetail({
         )}
       </article>
 
-      <div className="detail-grid detail-grid-tight">
+      <div className="detail-grid detail-grid-tight" data-tab="trace" role="tabpanel">
         <article className="soft-card">
           <strong className="card-title">Execution trace</strong>
           <div className="key-grid">
@@ -979,7 +1007,7 @@ export function IncidentDetail({
         </article>
       </div>
 
-      <div className="detail-grid detail-grid-tight">
+      <div className="detail-grid detail-grid-tight" data-tab="audit" role="tabpanel">
         <article className="soft-card">
           <strong className="card-title">Audit timeline</strong>
           <div className="timeline-list">
@@ -1017,7 +1045,7 @@ export function IncidentDetail({
         </article>
       </div>
 
-      <div className="detail-grid detail-grid-code">
+      <div className="detail-grid detail-grid-code" data-tab="raw" role="tabpanel">
         <article className="soft-card">
           <strong className="card-title">Raw alert payload</strong>
           <pre className="raw-json">{JSON.stringify(incident.alert, null, 2)}</pre>

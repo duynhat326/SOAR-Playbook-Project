@@ -286,7 +286,7 @@ test("dashboard loads incident list and case detail from API contracts", async (
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Incident stream" })).toBeVisible();
-  await expect(page.getByText("Dependency health")).toBeVisible();
+  await expect(page.locator(".topbar-status")).toContainText("Backend connected");
   await expect(page.locator(".detail-panel > .section-head h2")).toHaveText("WS-SMOKE-01");
   await expect(page.locator(".timeline-item p").first()).toHaveText(
     "Waiting on analyst sign-off before isolating the workstation.",
@@ -301,6 +301,7 @@ test("report link opens HTML artifact flow", async ({ page }) => {
   await page.goto("/");
 
   const reportRequestPromise = page.waitForRequest("**/api/v1/incidents/by-alert/smoke-alert-1/report/html");
+  await page.getByRole("tab", { name: "Trace & report" }).click();
   await page.getByRole("button", { name: "Open HTML report" }).click();
   const reportRequest = await reportRequestPromise;
   expect(reportRequest.headers()["authorization"]).toBe("Bearer playwright-session-token");

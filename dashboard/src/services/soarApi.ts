@@ -840,13 +840,12 @@ export async function listSavedFilters(): Promise<{ mode: ApiMode; filters: Save
 
 export async function saveFilter(
   name: string,
-  createdBy: string,
   filters: Record<string, unknown>,
 ): Promise<{ mode: ApiMode; filter: SavedFilter }> {
   const result = await apiOnly(async () => {
     const payload = await requestJson<any>("/api/v1/incidents/saved-filters", {
       method: "POST",
-      body: JSON.stringify({ name, created_by: createdBy, filters }),
+      body: JSON.stringify({ name, filters }),
     });
     return normalizeSavedFilter(payload);
   });
@@ -877,7 +876,7 @@ export async function updateIncidentCase(
 
 export async function addIncidentNote(
   alertId: string,
-  payload: { author: string; body: string },
+  payload: { body: string },
 ): Promise<{ mode: ApiMode; note: IncidentNote }> {
   const result = await apiOnly(async () => {
     const response = await requestJson<any>(`/api/v1/incidents/by-alert/${encodeURIComponent(alertId)}/notes`, {
@@ -908,7 +907,7 @@ export async function bulkUpdateIncidents(payload: {
 export async function approveAction(
   alertId: string,
   correlationId: string,
-  payload: { actor: string; comment?: string },
+  payload: { comment?: string },
 ): Promise<{ mode: ApiMode; incident: IncidentRecord }> {
   const result = await apiOnly(async () => {
     const response = await requestJson<any>(
@@ -926,7 +925,7 @@ export async function approveAction(
 export async function rejectAction(
   alertId: string,
   correlationId: string,
-  payload: { actor: string; comment?: string },
+  payload: { comment?: string },
 ): Promise<{ mode: ApiMode; incident: IncidentRecord }> {
   const result = await apiOnly(async () => {
     const response = await requestJson<any>(
@@ -944,7 +943,7 @@ export async function rejectAction(
 export async function rollbackAction(
   alertId: string,
   correlationId: string,
-  payload: { actor: string; comment?: string },
+  payload: { comment?: string },
 ): Promise<{ mode: ApiMode; incident: IncidentRecord }> {
   const result = await apiOnly(async () => {
     const response = await requestJson<any>(

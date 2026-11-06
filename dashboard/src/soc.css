@@ -1,0 +1,661 @@
+/* SOC dark theme layer: app shell, top bar, overview, workbench, detail tabs, intake drawer. */
+
+.ambient,
+.orb {
+  display: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ---- Top bar ---------------------------------------------------------- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  padding: 0.65rem 1.5rem;
+  background: rgba(10, 15, 26, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.topbar-brand h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.topbar-brand p {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  color: var(--sky);
+  background: var(--sky-soft);
+  border: 1px solid rgba(90, 162, 255, 0.35);
+}
+
+.topbar-status {
+  display: flex;
+  flex: 1 1 320px;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.22rem 0.65rem;
+  font-size: 0.76rem;
+  font-weight: 500;
+  color: var(--text-soft);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.status-pill.is-ok {
+  color: #6ee7b7;
+  border-color: rgba(52, 211, 153, 0.3);
+}
+
+.status-pill.is-warn {
+  color: #fcd34d;
+  border-color: rgba(251, 191, 36, 0.35);
+}
+
+.status-pill.is-bad {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-left: auto;
+}
+
+.session-menu {
+  position: relative;
+}
+
+.session-menu summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.session-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.session-form {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.5rem);
+  z-index: 50;
+  display: grid;
+  gap: 0.7rem;
+  width: min(340px, 90vw);
+  padding: 1rem;
+  background: var(--panel-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+.session-form .auth-copy {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* ---- Shell ------------------------------------------------------------- */
+.app-shell {
+  max-width: 1760px;
+  padding: 1rem 1.5rem 2.5rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0;
+}
+
+.banner-close {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 1.3rem;
+  line-height: 1;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+}
+
+.locked-panel {
+  padding: 2rem;
+  max-width: 640px;
+}
+
+.locked-panel h2 {
+  margin: 0.3rem 0 0.5rem;
+}
+
+.locked-panel p {
+  margin: 0;
+  color: var(--text-soft);
+}
+
+/* ---- Overview metrics -------------------------------------------------- */
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr)) minmax(240px, 1.8fr);
+  gap: 0.75rem;
+}
+
+.metric-card {
+  padding: 0.8rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+}
+
+.metric-card.tone-border-sky { border-left-color: var(--sky); }
+.metric-card.tone-border-critical { border-left-color: var(--red); }
+.metric-card.tone-border-medium { border-left-color: var(--amber); }
+.metric-card.tone-border-low { border-left-color: var(--mint); }
+
+.metric-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.metric-value {
+  display: block;
+  margin: 0.15rem 0;
+  font-size: 1.9rem;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-card p {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.metric-card-wide {
+  border-left-color: var(--border-strong);
+}
+
+.risk-bar {
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  margin: 0.7rem 0 0.6rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-soft);
+}
+
+.risk-seg {
+  min-width: 6px;
+}
+
+.risk-seg-empty {
+  background: var(--border);
+}
+
+.tone-bg-critical { background: var(--red); }
+.tone-bg-high { background: var(--orange); }
+.tone-bg-medium { background: var(--amber); }
+.tone-bg-low { background: var(--mint); }
+
+.risk-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+  color: var(--text-soft);
+  text-transform: capitalize;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 0.35rem;
+  border-radius: 2px;
+}
+
+/* ---- Severity tones: keep "high" visually distinct from "medium" ------ */
+.tone-high {
+  background: rgba(251, 146, 60, 0.16);
+  color: #fdba74;
+  border-color: rgba(251, 146, 60, 0.35);
+}
+
+.tone-text-high {
+  color: #fdba74;
+}
+
+.tone-critical {
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.badge {
+  padding: 0.18rem 0.6rem;
+  font-size: 0.72rem;
+}
+
+/* ---- Workbench ---------------------------------------------------------- */
+.workbench {
+  display: grid;
+  grid-template-columns: minmax(340px, 440px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.workbench-list {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.workbench-detail {
+  position: sticky;
+  top: 4.75rem;
+  max-height: calc(100vh - 5.5rem);
+  overflow-y: auto;
+  border-radius: var(--radius-xl);
+  min-width: 0;
+}
+
+.workbench .panel {
+  padding: 1rem;
+}
+
+.incident-list {
+  max-height: 62vh;
+  overflow-y: auto;
+}
+
+.compact-incident-row {
+  border-radius: var(--radius-md);
+}
+
+.incident-row.is-selected,
+.queue-item.is-selected {
+  border-color: var(--sky);
+  box-shadow: 0 0 0 1px var(--sky) inset;
+}
+
+.queue-item:hover,
+.incident-row:hover,
+.incident-row-button:hover,
+.filter-chip:hover,
+.secondary-button:hover {
+  transform: none;
+  border-color: var(--border-strong);
+}
+
+/* ---- Incident detail tabs ---------------------------------------------- */
+.detail-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0.75rem 0;
+  padding: 0.3rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.detail-tab {
+  border: 0;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-soft);
+  background: transparent;
+  border-radius: var(--radius-sm);
+}
+
+.detail-tab:hover {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
+.detail-tab.is-active {
+  color: #04121f;
+  background: var(--sky);
+}
+
+.detail-panel[data-active-tab="case"] [data-tab]:not([data-tab="case"]),
+.detail-panel[data-active-tab="response"] [data-tab]:not([data-tab="response"]),
+.detail-panel[data-active-tab="intel"] [data-tab]:not([data-tab="intel"]),
+.detail-panel[data-active-tab="trace"] [data-tab]:not([data-tab="trace"]),
+.detail-panel[data-active-tab="audit"] [data-tab]:not([data-tab="audit"]),
+.detail-panel[data-active-tab="raw"] [data-tab]:not([data-tab="raw"]) {
+  display: none;
+}
+
+/* ---- Forms on dark ------------------------------------------------------ */
+.field input,
+.field select,
+.field textarea,
+.note-input,
+textarea,
+select {
+  color: var(--text);
+  background: var(--bg-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+::placeholder {
+  color: var(--text-muted);
+}
+
+/* ---- Intake drawer ------------------------------------------------------ */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(2, 6, 14, 0.68);
+}
+
+.drawer {
+  position: relative;
+  width: min(580px, 100%);
+  height: 100%;
+  padding: 1rem;
+  overflow-y: auto;
+  background: var(--bg);
+  border-left: 1px solid var(--border-strong);
+}
+
+.drawer-close {
+  position: sticky;
+  top: 0;
+  float: right;
+  z-index: 2;
+}
+
+/* ---- Responsive --------------------------------------------------------- */
+@media (max-width: 1180px) {
+  .metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .metric-card-wide {
+    grid-column: 1 / -1;
+  }
+  .workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workbench-detail {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+  .incident-list {
+    max-height: 50vh;
+  }
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    padding: 0.6rem 1rem;
+  }
+  .app-shell {
+    padding: 0.75rem 1rem 2rem;
+  }
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .metric-value {
+    font-size: 1.5rem;
+  }
+  .topbar-actions {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---- Density tuning for the analyst view -------------------------------- */
+.section-head {
+  margin-bottom: 0.75rem;
+}
+
+.section-head h2 {
+  margin: 0.15rem 0 0;
+  font-size: 1.1rem;
+  letter-spacing: 0;
+}
+
+.eyebrow {
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+.intake-panel,
+.incidents-panel,
+.detail-panel,
+.queue-panel {
+  padding: 1rem;
+}
+
+.detail-summary {
+  margin: 0.25rem 0 0.75rem;
+  color: var(--text-soft);
+}
+
+/* The list column is narrow: stack the three filter inputs instead of overlapping them. */
+.workbench .filter-bar-extended {
+  grid-template-columns: 1fr 1fr;
+}
+
+.workbench .filter-bar-extended > .field:first-child {
+  grid-column: 1 / -1;
+}
+
+.workbench .bulk-toolbar {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    position: static;
+  }
+  .metric-card {
+    align-self: start;
+  }
+}
+
+/* Priority queue sits above the workbench so History and Deep dive start on the same line. */
+.queue-panel .queue-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.6rem;
+}
+
+.workbench-detail {
+  top: 4.25rem;
+  max-height: calc(100vh - 5rem);
+}
+
+/* ---- Compact incident rows: one page scrollbar, short rows -------------- */
+.workbench .incident-list {
+  max-height: none;
+  overflow: visible;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.workbench .compact-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin-top: 0.5rem;
+}
+
+.workbench .compact-facts .incident-fact {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.workbench .compact-facts .incident-fact small {
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.workbench .compact-facts .incident-fact strong {
+  font-size: 0.82rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* Keep owner, process, IP, queue, score, ticket; hide the rest in the list (full data is in Deep dive). */
+.workbench .compact-facts .incident-fact:nth-child(2),
+.workbench .compact-facts .incident-fact:nth-child(5),
+.workbench .compact-facts .incident-fact:nth-child(6),
+.workbench .compact-facts .incident-fact:nth-child(8),
+.workbench .compact-facts .incident-fact:nth-child(10) {
+  display: none;
+}
+
+.workbench .incident-row-top {
+  gap: 0.5rem;
+}
+
+.workbench .incident-updated {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Deep dive flows with the page (no inner scroll box, so nothing is clipped); only the tab bar stays pinned. */
+.workbench-detail {
+  position: static;
+  max-height: none;
+  overflow: visible;
+}
+
+.detail-tabs {
+  top: 4.4rem;
+}
+
+@media (max-width: 1180px) {
+  .detail-tabs {
+    top: 0;
+  }
+}
+
+/* History matches the height of Deep dive; its row list scrolls inside the panel. */
+@media (min-width: 1181px) {
+  .workbench {
+    align-items: stretch;
+  }
+
+  .workbench-list {
+    position: relative;
+    min-height: 640px;
+  }
+
+  .workbench-list > .incidents-panel {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .workbench-list > .incidents-panel .incident-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    overflow-y: auto;
+    align-content: start;
+  }
+}
+
+.workbench-list > .incidents-panel > :not(.incident-list) {
+  flex: none;
+}
+
+/* Long audit/notes feeds scroll inside their card instead of stretching the whole page. */
+.detail-panel .timeline-list {
+  max-height: 460px;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
