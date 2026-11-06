@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && vite build",
     "preview": "vite preview",
-    "test:smoke": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -ExecutionPolicy Bypass -File .\\run-playwright-smoke.ps1"
+    "test:smoke": "bash ./run-playwright-smoke.sh"
   },
   "dependencies": {
     "react": "^18.3.1",

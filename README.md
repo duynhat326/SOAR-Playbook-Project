@@ -158,8 +158,8 @@ The main runtime entrypoints are:
 ├── storage/                Repository implementations for SQLite and Postgres
 ├── tests/                  Backend test suite
 ├── main.py                 CLI entrypoint
-├── start-local.ps1         Local dev stack launcher
-└── stop-local.ps1          Local dev stack shutdown helper
+├── start-local.sh          Local dev stack launcher (Linux/macOS)
+└── stop-local.sh           Local dev stack shutdown helper
 ```
 
 ## System Architecture
@@ -197,8 +197,8 @@ SQLite currently has the most complete analyst workflow support. The Postgres re
 ### Backend
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -219,7 +219,7 @@ Choose one of these approaches:
 You can validate env profiles with:
 
 ```bash
-python scripts/validate_env.py config/environments/development.env
+python3 scripts/validate_env.py config/environments/development.env
 ```
 
 ## Environment Variables
@@ -281,8 +281,8 @@ python scripts/validate_env.py config/environments/development.env
 
 ### One-command local startup
 
-```powershell
-.\start-local.ps1
+```bash
+./start-local.sh
 ```
 
 This script:
@@ -295,8 +295,8 @@ This script:
 
 Stop the local stack with:
 
-```powershell
-.\stop-local.ps1
+```bash
+./stop-local.sh
 ```
 
 ### Manual development
@@ -304,13 +304,13 @@ Stop the local stack with:
 Backend:
 
 ```bash
-python -m uvicorn api.app:app --reload
+python3 -m uvicorn api.app:app --reload
 ```
 
 Worker:
 
 ```bash
-python scripts/run_remediation_worker.py
+python3 scripts/run_remediation_worker.py
 ```
 
 Dashboard:
@@ -322,8 +322,8 @@ npm --prefix dashboard run dev
 CLI:
 
 ```bash
-python main.py --scenario mixed
-python main.py --alert data/sample_alerts/alert_04_full_critical.json
+python3 main.py --scenario mixed
+python3 main.py --alert data/sample_alerts/alert_04_full_critical.json
 ```
 
 ## Verification Snapshot
@@ -349,7 +349,7 @@ pytest -q
 Static validation:
 
 ```bash
-python -m compileall api actions alert_generator engine enrichment integrations observability reporting schemas security services storage scripts
+python3 -m compileall api actions alert_generator engine enrichment integrations observability reporting schemas security services storage scripts
 ```
 
 Dashboard build and smoke tests:
@@ -399,7 +399,7 @@ Bundled-Postgres profile:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.postgres.yml --profile postgres up --build -d
-python scripts/apply_postgres_migrations.py
+python3 scripts/apply_postgres_migrations.py
 ```
 
 ### Release Compose
@@ -470,5 +470,5 @@ Roles used by the API:
 - `SOAR_AUTH_TOKENS_JSON is not configured`: add a token map before using protected API routes.
 - Dashboard loads but API calls fail: verify the bearer token, backend startup, and `SOAR_API_PROXY_TARGET` or `VITE_SOAR_API_BASE_URL`.
 - Queue-based actions never complete: start `scripts/run_remediation_worker.py` or switch `SOAR_POLICY_EXECUTION_MODE` back to `sync`.
-- Postgres runtime fails to initialize: confirm `SOAR_DATABASE_URL` or `SUPABASE_DB_URL`, then run `python scripts/apply_postgres_migrations.py`.
+- Postgres runtime fails to initialize: confirm `SOAR_DATABASE_URL` or `SUPABASE_DB_URL`, then run `python3 scripts/apply_postgres_migrations.py`.
 - Readiness shows degraded threat intel: set `VIRUSTOTAL_API_KEY` or switch `SOAR_INTEL_PROVIDER=mock`.
