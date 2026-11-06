@@ -10,7 +10,7 @@ from alert_generator.generator import generate_alert
 from engine.policy_engine import PolicyEngine
 from engine.policy_loader import DEFAULT_POLICY_CONFIG
 from services.remediation_queue import RepositoryQueuePublisher
-from services.workflow_service import SoarWorkflowService
+from services.workflow_service import AlertWorkspaceConflictError, SoarWorkflowService
 from storage.incident_repository import SupabaseIncidentRepository
 from storage.sqlite_repository import SQLiteIncidentRepository
 
@@ -483,3 +483,37 @@ def test_postgres_repository_analyst_workflow(tmp_path):
         with repository._db.connect() as conn:
             conn.execute("DELETE FROM alerts WHERE workspace = %s", (workspace,))
             conn.execute("DELETE FROM saved_filters WHERE workspace = %s", (workspace,))
+
+
+def test_alert_id_from_another_workspace_is_rejected_instead_of_replayed(tmp_path):
+    service = SoarWorkflowService(verbose=False, repository=SQLiteIncidentRepository(db_path=tmp_path / "soar.db"))
+    alert = generate_alert(scenario="mixed", seed=77)
+    service.process_alert(alert, generate_report=False, export_pdf=False, workspace="team-b")
+
+    with pytest.raises(AlertWorkspaceConflictError):
+        service.process_alert(alert, generate_report=False, export_pdf=False, workspace="team-a")
+    # Same workspace still replays the stored incident.
+    assert service.process_alert(alert, generate_report=False, export_pdf=False, workspace="team-b").alert.alert_id == alert.alert_id
+
+
+def test_escalate_overdue_approvals_only_touches_callers_workspaces(tmp_path):
+    repository = SQLiteIncidentRepository(db_path=tmp_path / "soar.db")
+    service = SoarWorkflowService(
+        verbose=False,
+        repository=repository,
+        policy_engine=PolicyEngine(
+            verbose=False,
+            policy_config_path=_queued_policy_config_path(tmp_path),
+            queue_publisher=RepositoryQueuePublisher(repository),
+        ),
+    )
+    alert = generate_alert(scenario="malicious_hash", seed=5153)
+    service.process_alert(alert, generate_report=False, export_pdf=False, workspace="team-b")
+    with repository._connection() as conn:
+        conn.execute(
+            "UPDATE queue_jobs SET approval_escalates_at = '2000-01-01T00:00:00+00:00' WHERE status = 'waiting_approval'"
+        )
+        conn.commit()
+
+    assert repository.escalate_overdue_approvals(actor="alice", workspaces=["team-a"]) == []
+    assert [i["workspace"] for i in repository.escalate_overdue_approvals(actor="bob", workspaces=["team-b"])] == ["team-b"]

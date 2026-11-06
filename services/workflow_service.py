@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from engine.policy_engine import PolicyEngine
 from engine.policy_loader import load_policy_config
@@ -19,6 +19,10 @@ from storage.incident_repository import (
     create_incident_repository,
 )
 from workspace_utils import normalize_workspace
+
+
+class AlertWorkspaceConflictError(ValueError):
+    """The alert_id already belongs to an incident in a different workspace."""
 
 
 @dataclass
@@ -116,6 +120,11 @@ class SoarWorkflowService:
                 with observability.span("workflow.lookup_existing_incident"):
                     existing_incident = self._repository.get_incident_by_alert_id(alert.alert_id)
                 if existing_incident is not None:
+                    if normalize_workspace(existing_incident.get("workspace")) != resolved_workspace:
+                        # Replaying would hand another workspace's incident to this caller.
+                        raise AlertWorkspaceConflictError(
+                            f"alert_id '{alert.alert_id}' is already in use by another workspace."
+                        )
                     observability.metrics.incr("workflow.replay_total")
                     workflow_result = self._workflow_result_from_record(
                         existing_incident,
@@ -472,10 +481,11 @@ class SoarWorkflowService:
         self,
         *,
         actor: str,
+        workspaces: Optional[Sequence[str]] = None,
     ) -> list[dict[str, Any]]:
         if self._repository is None:
             raise RuntimeError("Persistence is disabled for this workflow service.")
-        records = self._repository.escalate_overdue_approvals(actor=actor)
+        records = self._repository.escalate_overdue_approvals(actor=actor, workspaces=workspaces)
         incidents = [
             hydrated
             for record in records

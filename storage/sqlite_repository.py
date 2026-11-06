@@ -1390,23 +1390,32 @@ class SQLiteIncidentRepository:
         self,
         *,
         actor: str,
+        workspaces: Optional[Sequence[str]] = None,
     ) -> list[dict[str, Any]]:
         escalation_time = utc_now()
         escalation_time_iso = escalation_time.isoformat()
         affected_alert_ids: list[str] = []
+        # None = system caller (all workspaces); API callers always pass the principal's workspaces.
+        scoped = [] if workspaces is None else [w for w in effective_workspaces(workspaces) if w != "*"]
+        workspace_filter = (
+            f"AND alert_id IN (SELECT alert_id FROM alerts WHERE workspace IN ({', '.join('?' for _ in scoped)}))"
+            if scoped
+            else ""
+        )
 
         with self._connection() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM queue_jobs
                 WHERE status = 'waiting_approval'
                   AND approval_escalates_at IS NOT NULL
                   AND approval_escalates_at <= ?
                   AND approval_escalated_at IS NULL
+                  {workspace_filter}
                 ORDER BY approval_escalates_at ASC, id ASC
                 """,
-                (escalation_time_iso,),
+                (escalation_time_iso, *scoped),
             ).fetchall()
 
             for row in rows:

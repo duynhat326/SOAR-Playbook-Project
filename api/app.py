@@ -42,7 +42,7 @@ from security import (
     ensure_roles,
     require_roles,
 )
-from services.workflow_service import SoarWorkflowService
+from services.workflow_service import AlertWorkspaceConflictError, SoarWorkflowService
 from storage.incident_repository import MAX_INCIDENT_LIST_LIMIT
 
 load_local_env_files()
@@ -380,12 +380,15 @@ def process_incident(
         _assert_processable_alert_payload(request.alert)
         workspace = _resolve_workspace_for_principal(bound_principal, request.workspace)
         alert = request.alert.model_copy(update={"workspace": workspace})
-        result = get_workflow_service().process_alert(
-            alert,
-            generate_report=request.generate_report,
-            export_pdf=request.export_pdf,
-            workspace=workspace,
-        )
+        try:
+            result = get_workflow_service().process_alert(
+                alert,
+                generate_report=request.generate_report,
+                export_pdf=request.export_pdf,
+                workspace=workspace,
+            )
+        except AlertWorkspaceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return ProcessIncidentResponse.from_workflow_result(result)
 
 
@@ -406,12 +409,15 @@ def process_scenario(
             scenario=request.scenario,
             seed=request.seed,
         ).model_copy(update={"workspace": workspace})
-        result = get_workflow_service().process_alert(
-            alert,
-            generate_report=request.generate_report,
-            export_pdf=request.export_pdf,
-            workspace=workspace,
-        )
+        try:
+            result = get_workflow_service().process_alert(
+                alert,
+                generate_report=request.generate_report,
+                export_pdf=request.export_pdf,
+                workspace=workspace,
+            )
+        except AlertWorkspaceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return ProcessIncidentResponse.from_workflow_result(result)
 
 
@@ -697,6 +703,7 @@ def escalate_overdue_approvals(
     with _route_context("escalate_overdue_approvals", principal=principal) as bound_principal:
         incidents = get_workflow_service().escalate_overdue_approvals(
             actor=_principal_actor(bound_principal),
+            workspaces=bound_principal.effective_workspaces(),
         )
         return [IncidentRecordResponse.model_validate(incident) for incident in incidents]
 

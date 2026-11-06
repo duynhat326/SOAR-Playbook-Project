@@ -9,6 +9,7 @@ import api.app as api_app
 from alert_generator.generator import generate_alert
 from api.schemas import ProcessAlertRequest
 from security import ROLE_INCIDENT_PROCESS, ROLE_INCIDENT_READ, authenticate_token
+from services.readiness_service import build_readiness_report
 from services.workflow_service import SoarWorkflowService
 from scripts.run_pentest import run_pentest
 
@@ -117,3 +118,14 @@ def test_pentest_runner_forces_mock_integrations(tmp_path: Path, monkeypatch) ->
 
     assert summary["finding_count"] == 0
     assert summary["check_count"] >= 4
+
+
+def test_readiness_never_returns_database_password():
+    class Repo:
+        db_path = "postgresql://postgres.abc:S3cretPassw0rd@aws-0-x.pooler.supabase.com:5432/postgres"
+
+    report = build_readiness_report(repository=Repo())
+    repository_dependency = next(d for d in report["dependencies"] if d["name"] == "incident_repository")
+
+    assert "S3cretPassw0rd" not in str(repository_dependency)
+    assert "aws-0-x.pooler.supabase.com:5432/postgres" in repository_dependency["detail"]

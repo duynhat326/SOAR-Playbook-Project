@@ -3,9 +3,19 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from env_utils import load_local_env_files
 from observability import observability
+
+
+def _redact_db_target(target: str) -> str:
+    """Never echo a database password back through the API (readiness is readable by incident_read)."""
+    parts = urlsplit(target)
+    if parts.password is None:
+        return target
+    host = parts.netloc.rsplit("@", 1)[-1]
+    return urlunsplit(parts._replace(netloc=f"{parts.username}:***@{host}"))
 
 
 def build_readiness_report(*, repository: Any) -> dict[str, Any]:
@@ -20,7 +30,7 @@ def build_readiness_report(*, repository: Any) -> dict[str, Any]:
 
     dependencies: list[dict[str, Any]] = []
 
-    db_target = str(getattr(repository, "db_path", "unknown"))
+    db_target = _redact_db_target(str(getattr(repository, "db_path", "unknown")))
     dependencies.append(
         {
             "name": "incident_repository",

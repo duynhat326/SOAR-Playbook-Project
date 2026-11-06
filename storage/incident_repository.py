@@ -257,6 +257,7 @@ class IncidentRepositoryProtocol(Protocol):
         self,
         *,
         actor: str,
+        workspaces: Optional[Sequence[str]] = None,
     ) -> list[dict[str, Any]]: ...
     def save_filter(
         self,
@@ -1296,21 +1297,30 @@ class SupabaseIncidentRepository:
             )
         return self.get_incident_by_alert_id(alert_id)
 
-    def escalate_overdue_approvals(self, *, actor: str) -> list[dict[str, Any]]:
+    def escalate_overdue_approvals(
+        self,
+        *,
+        actor: str,
+        workspaces: Optional[Sequence[str]] = None,
+    ) -> list[dict[str, Any]]:
         escalation_time = utc_now()
         affected_alert_ids: list[str] = []
+        # None = system caller (all workspaces); API callers always pass the principal's workspaces.
+        scoped = [] if workspaces is None else [w for w in effective_workspaces(workspaces) if w != "*"]
+        workspace_filter = "AND alert_id IN (SELECT alert_id FROM alerts WHERE workspace = ANY(%s))" if scoped else ""
         with self._db.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM queue_jobs
                 WHERE status = 'waiting_approval'
                   AND approval_escalates_at IS NOT NULL
                   AND approval_escalates_at <= %s
                   AND approval_escalated_at IS NULL
+                  {workspace_filter}
                 ORDER BY approval_escalates_at ASC, id ASC
                 FOR UPDATE
                 """,
-                (escalation_time,),
+                (escalation_time, scoped) if scoped else (escalation_time,),
             ).fetchall()
             for row in rows:
                 targets = SQLiteIncidentRepository._parse_string_list(row["escalation_targets_json"])
