@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol
 
 from psycopg.types.json import Jsonb
 
-from schemas.alert import ActionResult, QueuedActionRequest, ResponseAction
+from schemas.alert import (
+    ActionResult,
+    CorrelationOutcome,
+    IncidentCaseStatus,
+    QueuedActionRequest,
+    ResponseAction,
+)
 from storage.postgres import PostgresDatabase, is_postgres_target, resolve_database_url
 from storage.sqlite_repository import MAX_INCIDENT_LIST_LIMIT, SQLiteIncidentRepository
 from time_utils import utc_now
@@ -329,65 +335,98 @@ class SupabaseIncidentRepository:
                 },
             )
 
-            incident_row = conn.execute(
+            outcome = correlation_trace.outcome.value
+            existing_incident = conn.execute(
                 """
-                INSERT INTO incidents (
-                    alert_id, incident_key, latest_alert_id, workspace, hostname, detection_name, risk_score, risk_level,
-                    ticket_id, status, completed_at, report_path, case_status, case_owner,
-                    triggered_actions_json, policy_reasoning_json, enriched_json,
-                    response_json, created_at, updated_at
-                ) VALUES (
-                    %(alert_id)s, %(incident_key)s, %(latest_alert_id)s, %(workspace)s, %(hostname)s, %(detection_name)s, %(risk_score)s, %(risk_level)s,
-                    %(ticket_id)s, %(status)s, %(completed_at)s, %(report_path)s, %(case_status)s, %(case_owner)s,
-                    %(triggered_actions)s, %(policy_reasoning)s, %(enriched_json)s,
-                    %(response_json)s, %(created_at)s, %(updated_at)s
-                )
-                ON CONFLICT (alert_id) DO UPDATE SET
-                    incident_key = COALESCE(incidents.incident_key, EXCLUDED.incident_key),
-                    latest_alert_id = EXCLUDED.latest_alert_id,
-                    workspace = EXCLUDED.workspace,
-                    hostname = EXCLUDED.hostname,
-                    detection_name = EXCLUDED.detection_name,
-                    risk_score = EXCLUDED.risk_score,
-                    risk_level = EXCLUDED.risk_level,
-                    ticket_id = EXCLUDED.ticket_id,
-                    status = EXCLUDED.status,
-                    completed_at = EXCLUDED.completed_at,
-                    report_path = EXCLUDED.report_path,
-                    case_status = incidents.case_status,
-                    case_owner = incidents.case_owner,
-                    triggered_actions_json = EXCLUDED.triggered_actions_json,
-                    policy_reasoning_json = EXCLUDED.policy_reasoning_json,
-                    enriched_json = EXCLUDED.enriched_json,
-                    response_json = EXCLUDED.response_json,
-                    updated_at = EXCLUDED.updated_at
-                RETURNING id
+                SELECT incidents.id, incidents.ticket_id, incidents.report_path, incidents.case_status
+                FROM incidents
+                LEFT JOIN incident_alerts ON incident_alerts.incident_id = incidents.id
+                WHERE incidents.workspace = %s
+                  AND (
+                    incidents.incident_key = %s
+                    OR incidents.alert_id = %s
+                    OR incidents.latest_alert_id = %s
+                    OR incident_alerts.alert_id = %s
+                  )
+                ORDER BY incidents.updated_at DESC, incidents.id DESC
+                LIMIT 1
                 """,
-                {
-                    "alert_id": alert.alert_id,
-                    "incident_key": incident_key,
-                    "latest_alert_id": latest_alert_id,
-                    "workspace": workspace,
-                    "hostname": alert.hostname,
-                    "detection_name": alert.detection_name,
-                    "risk_score": enriched.risk_score,
-                    "risk_level": enriched.risk_level,
-                    "ticket_id": response.ticket_id,
-                    "status": incident_status,
-                    "completed_at": response.completed_at,
-                    "report_path": response.report_path,
-                    "case_status": "new",
-                    "case_owner": None,
-                    "triggered_actions": Jsonb(
-                        [action.value for action in response.triggered_actions]
-                    ),
-                    "policy_reasoning": Jsonb(response.policy_reasoning),
-                    "enriched_json": Jsonb(enriched.model_dump(mode="json")),
-                    "response_json": Jsonb(response.model_dump(mode="json")),
-                    "created_at": timestamp,
-                    "updated_at": timestamp,
-                },
+                (workspace, incident_key, alert.alert_id, alert.alert_id, alert.alert_id),
             ).fetchone()
+            has_report_artifacts = any(
+                (
+                    result.artifacts.markdown_path,
+                    result.artifacts.html_path,
+                    result.artifacts.pdf_path,
+                    result.artifacts.markdown_content,
+                )
+            )
+            stored_ticket_id = response.ticket_id
+            stored_report_path = response.report_path
+            if existing_incident is not None:
+                stored_ticket_id = stored_ticket_id or existing_incident["ticket_id"]
+                if not has_report_artifacts:
+                    stored_report_path = stored_report_path or existing_incident["report_path"]
+            stored_response = response.model_copy(
+                update={"ticket_id": stored_ticket_id, "report_path": stored_report_path}
+            )
+            incident_params = {
+                "alert_id": alert.alert_id,
+                "incident_key": incident_key,
+                "latest_alert_id": latest_alert_id,
+                "workspace": workspace,
+                "hostname": alert.hostname,
+                "detection_name": alert.detection_name,
+                "risk_score": enriched.risk_score,
+                "risk_level": enriched.risk_level,
+                "ticket_id": stored_ticket_id,
+                "status": incident_status,
+                "completed_at": response.completed_at,
+                "report_path": stored_report_path,
+                "triggered_actions": Jsonb([action.value for action in response.triggered_actions]),
+                "policy_reasoning": Jsonb(response.policy_reasoning),
+                "enriched_json": Jsonb(enriched.model_dump(mode="json")),
+                "response_json": Jsonb(stored_response.model_dump(mode="json")),
+                "timestamp": timestamp,
+            }
+            if existing_incident is None:
+                incident_row = conn.execute(
+                    """
+                    INSERT INTO incidents (
+                        alert_id, incident_key, latest_alert_id, workspace, hostname, detection_name,
+                        risk_score, risk_level, ticket_id, status, completed_at, report_path,
+                        case_status, case_owner, triggered_actions_json, policy_reasoning_json,
+                        enriched_json, response_json, created_at, updated_at
+                    ) VALUES (
+                        %(alert_id)s, %(incident_key)s, %(latest_alert_id)s, %(workspace)s, %(hostname)s,
+                        %(detection_name)s, %(risk_score)s, %(risk_level)s, %(ticket_id)s, %(status)s,
+                        %(completed_at)s, %(report_path)s, 'new', NULL, %(triggered_actions)s,
+                        %(policy_reasoning)s, %(enriched_json)s, %(response_json)s, %(timestamp)s, %(timestamp)s
+                    )
+                    RETURNING id
+                    """,
+                    incident_params,
+                ).fetchone()
+            else:
+                next_case_status = existing_incident["case_status"] or IncidentCaseStatus.NEW.value
+                if outcome == CorrelationOutcome.REOPENED_INCIDENT.value:
+                    next_case_status = IncidentCaseStatus.IN_PROGRESS.value
+                incident_row = conn.execute(
+                    """
+                    UPDATE incidents SET
+                        latest_alert_id = %(latest_alert_id)s, hostname = %(hostname)s,
+                        detection_name = %(detection_name)s, risk_score = %(risk_score)s,
+                        risk_level = %(risk_level)s, ticket_id = %(ticket_id)s, status = %(status)s,
+                        completed_at = %(completed_at)s, report_path = %(report_path)s,
+                        case_status = %(case_status)s,
+                        triggered_actions_json = %(triggered_actions)s,
+                        policy_reasoning_json = %(policy_reasoning)s, enriched_json = %(enriched_json)s,
+                        response_json = %(response_json)s, updated_at = %(timestamp)s
+                    WHERE id = %(id)s
+                    RETURNING id
+                    """,
+                    {**incident_params, "case_status": next_case_status, "id": existing_incident["id"]},
+                ).fetchone()
             incident_id = int(incident_row["id"])
 
             conn.execute(
@@ -408,7 +447,7 @@ class SupabaseIncidentRepository:
                 (
                     incident_id,
                     alert.alert_id,
-                    timestamp,
+                    alert.received_at,
                     correlation_trace.outcome.value,
                     correlation_trace.evidence[0].strategy if correlation_trace.evidence else None,
                     correlation_trace.evidence[0].fingerprint if correlation_trace.evidence else None,
@@ -417,21 +456,43 @@ class SupabaseIncidentRepository:
                 ),
             )
 
+            conn.execute("DELETE FROM incident_fingerprints WHERE alert_id = %s", (alert.alert_id,))
+            for fingerprint in correlation_trace.candidate_fingerprints:
+                conn.execute(
+                    """
+                    INSERT INTO incident_fingerprints (
+                        incident_id, alert_id, strategy, fingerprint, fingerprint_fields_json,
+                        values_json, observed_at, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        incident_id,
+                        alert.alert_id,
+                        fingerprint.strategy,
+                        fingerprint.fingerprint,
+                        Jsonb(list(fingerprint.fields)),
+                        Jsonb(dict(fingerprint.values)),
+                        alert.received_at,
+                        timestamp,
+                    ),
+                )
+
             conn.execute(
-                "DELETE FROM action_results WHERE incident_id = %s",
-                (incident_id,),
+                "DELETE FROM action_results WHERE incident_id = %s AND COALESCE(alert_id, '') = %s",
+                (incident_id, alert.alert_id),
             )
             for action_result in response.action_results:
                 serialized = action_result.model_dump(mode="json")
                 conn.execute(
                     """
                     INSERT INTO action_results (
-                        incident_id, action, status, executed_at, details,
+                        incident_id, alert_id, action, status, executed_at, details,
                         correlation_id, attempt_count, updated_at, raw_json, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         incident_id,
+                        alert.alert_id,
                         action_result.action.value,
                         serialized["status"],
                         action_result.executed_at,
@@ -444,18 +505,21 @@ class SupabaseIncidentRepository:
                     ),
                 )
 
+            # Incident status reflects every alert attached to it, not just this one.
+            all_statuses = conn.execute(
+                "SELECT status FROM action_results WHERE incident_id = %s", (incident_id,)
+            ).fetchall()
             conn.execute(
-                "DELETE FROM reports WHERE incident_id = %s",
-                (incident_id,),
-            )
-            if any(
+                "UPDATE incidents SET status = %s, updated_at = %s WHERE id = %s",
                 (
-                    result.artifacts.markdown_path,
-                    result.artifacts.html_path,
-                    result.artifacts.pdf_path,
-                    result.artifacts.markdown_content,
-                )
-            ):
+                    self._derive_incident_status_from_payloads([{"status": row["status"]} for row in all_statuses]),
+                    timestamp,
+                    incident_id,
+                ),
+            )
+
+            if has_report_artifacts:
+                conn.execute("DELETE FROM reports WHERE incident_id = %s", (incident_id,))
                 conn.execute(
                     """
                     INSERT INTO reports (
@@ -706,10 +770,80 @@ class SupabaseIncidentRepository:
             )
             self._upsert_action_result_for_alert(conn, row["alert_id"], failed_result)
 
+    def find_correlated_incident(
+        self,
+        fingerprints: list["CorrelationFingerprint"],
+        *,
+        observed_at: datetime,
+        window: Any,
+        workspace: str,
+    ) -> Optional[dict[str, Any]]:
+        if not fingerprints:
+            return None
+
+        window_start = observed_at - window
+        with self._db.connect() as conn:
+            for fingerprint in fingerprints:
+                row = conn.execute(
+                    """
+                    SELECT
+                        incidents.id AS incident_id,
+                        incidents.incident_key,
+                        incidents.case_status,
+                        incident_fingerprints.strategy,
+                        incident_fingerprints.fingerprint,
+                        incident_fingerprints.values_json
+                    FROM incident_fingerprints
+                    JOIN incidents ON incidents.id = incident_fingerprints.incident_id
+                    WHERE incident_fingerprints.fingerprint = %s
+                      AND incidents.workspace = %s
+                      AND incident_fingerprints.observed_at BETWEEN %s AND %s
+                    ORDER BY incident_fingerprints.observed_at DESC, incident_fingerprints.id DESC
+                    LIMIT 1
+                    """,
+                    (fingerprint.fingerprint, normalize_workspace(workspace), window_start, observed_at),
+                ).fetchone()
+                if row is None:
+                    continue
+
+                incident_id = int(row["incident_id"])
+                related_alert_ids = [
+                    r["alert_id"]
+                    for r in conn.execute(
+                        "SELECT alert_id FROM incident_alerts WHERE incident_id = %s ORDER BY linked_at ASC, id ASC",
+                        (incident_id,),
+                    ).fetchall()
+                ]
+                matched_alert_ids = [
+                    r["alert_id"]
+                    for r in conn.execute(
+                        """
+                        SELECT DISTINCT alert_id, observed_at, id
+                        FROM incident_fingerprints
+                        WHERE incident_id = %s AND fingerprint = %s AND observed_at BETWEEN %s AND %s
+                        ORDER BY observed_at ASC, id ASC
+                        """,
+                        (incident_id, row["fingerprint"], window_start, observed_at),
+                    ).fetchall()
+                ]
+                return {
+                    "incident_id": incident_id,
+                    "incident_key": row["incident_key"]
+                    or (f"incident-{related_alert_ids[0]}" if related_alert_ids else None),
+                    "case_status": row["case_status"],
+                    "related_alert_ids": related_alert_ids,
+                    "matched_alert_ids": matched_alert_ids,
+                    "strategy": row["strategy"],
+                    "fingerprint": row["fingerprint"],
+                    "values": self._as_json_payload(row["values_json"]),
+                }
+        return None
+
     def get_incident_by_alert_id(self, alert_id: str) -> Optional[dict[str, Any]]:
         return self._get_incident(
-            "WHERE incidents.alert_id = %s",
-            (alert_id,),
+            "WHERE incidents.alert_id = %s OR incidents.latest_alert_id = %s"
+            " OR incidents.id IN (SELECT incident_id FROM incident_alerts WHERE alert_id = %s)",
+            (alert_id, alert_id, alert_id),
         )
 
     def get_incident_by_ticket_id(self, ticket_id: str) -> Optional[dict[str, Any]]:
@@ -1060,8 +1194,10 @@ class SupabaseIncidentRepository:
         action_result: ActionResult,
     ) -> None:
         incident_row = conn.execute(
-            "SELECT id, response_json FROM incidents WHERE alert_id = %s",
-            (alert_id,),
+            "SELECT id, response_json FROM incidents WHERE alert_id = %s"
+            " OR id IN (SELECT incident_id FROM incident_alerts WHERE alert_id = %s)"
+            " ORDER BY (alert_id = %s) DESC LIMIT 1",
+            (alert_id, alert_id, alert_id),
         ).fetchone()
         if incident_row is None:
             return

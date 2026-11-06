@@ -1,5 +1,8 @@
+import os
 from datetime import timedelta
+from uuid import uuid4
 
+import pytest
 import yaml
 
 from schemas.alert import ActionResult, EnrichedAlert, IncidentResponse, ResponseAction
@@ -8,6 +11,7 @@ from engine.policy_engine import PolicyEngine
 from engine.policy_loader import DEFAULT_POLICY_CONFIG
 from services.remediation_queue import RepositoryQueuePublisher
 from services.workflow_service import SoarWorkflowService
+from storage.incident_repository import SupabaseIncidentRepository
 from storage.sqlite_repository import SQLiteIncidentRepository
 
 
@@ -384,3 +388,26 @@ def test_workflow_service_syncs_approval_and_rollback_comments(tmp_path):
     assert "queue.cancelled" in categories
     assert any("Approved after review." in str(comment["comment"]) for comment in ticketing.comments)
     assert any("Cancel before endpoint isolation." in str(comment["comment"]) for comment in ticketing.comments)
+
+
+@pytest.mark.skipif(
+    not os.getenv("SOAR_TEST_POSTGRES_URL"),
+    reason="Set SOAR_TEST_POSTGRES_URL to a throwaway Postgres DB (never production) to run.",
+)
+def test_postgres_repository_correlates_grouped_alerts():
+    workspace = f"pgtest-{uuid4().hex[:8]}"
+    repository = SupabaseIncidentRepository(os.environ["SOAR_TEST_POSTGRES_URL"])
+    service = SoarWorkflowService(verbose=False, repository=repository)
+    first = generate_alert(scenario="mixed", seed=8181).model_copy(update={"alert_id": f"{workspace}-a"})
+    second = _clone_alert(first, alert_id=f"{workspace}-b", minutes_offset=5)
+    try:
+        r1 = service.process_alert(first, generate_report=False, export_pdf=False, workspace=workspace)
+        r2 = service.process_alert(second, generate_report=False, export_pdf=False, workspace=workspace)
+
+        assert r1.response.correlation_trace.outcome.value == "new_incident"
+        assert r2.response.correlation_trace.outcome.value == "attached_to_existing"
+        # The attached alert resolves to the same incident row as the first one.
+        assert repository.get_incident_by_alert_id(second.alert_id)["alert_id"] == first.alert_id
+    finally:
+        with repository._db.connect() as conn:
+            conn.execute("DELETE FROM alerts WHERE workspace = %s", (workspace,))
