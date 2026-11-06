@@ -48,7 +48,7 @@ Cross-cutting: `integrations/` (source connectors: passthrough / wazuh / microso
 
 ### Persistence backends (important gotcha)
 
-Repo selection is by `SOAR_DB_TARGET` (file path → SQLite, DSN → Postgres), falling back to `SOAR_DATABASE_URL`, `SUPABASE_DB_URL`, then `SOAR_SQLITE_FALLBACK_PATH` (`output/soar-local.db`). `storage/sqlite_repository.py` is the complete implementation; the Postgres repository in `storage/incident_repository.py` supports ingestion/read/list/queue only — analyst mutations (case updates, notes, approvals, reopen, bulk update, saved-filter writes) raise `NotImplemented`. Postgres schema changes go in ordered SQL under `migrations/postgres/` (applied by `scripts/apply_postgres_migrations.py`).
+Repo selection is by `SOAR_DB_TARGET` (file path → SQLite, DSN → Postgres), falling back to `SOAR_DATABASE_URL`, `SUPABASE_DB_URL`, then `SOAR_SQLITE_FALLBACK_PATH` (`output/soar-local.db`). `storage/sqlite_repository.py` and the Postgres `SupabaseIncidentRepository` (`storage/incident_repository.py`) implement the same `IncidentRepositoryProtocol` and are meant to stay in parity — port any change to both. Postgres schema changes go in ordered SQL under `migrations/postgres/` (applied by `scripts/apply_postgres_migrations.py`); `PostgresDatabase` also runs idempotent `CREATE/ALTER ... IF NOT EXISTS` on startup. Postgres tests in `tests/test_workflow_service.py` skip unless `SOAR_TEST_POSTGRES_URL` points at a throwaway DB.
 
 ### API and dashboard
 

@@ -411,3 +411,75 @@ def test_postgres_repository_correlates_grouped_alerts():
     finally:
         with repository._db.connect() as conn:
             conn.execute("DELETE FROM alerts WHERE workspace = %s", (workspace,))
+
+
+@pytest.mark.skipif(
+    not os.getenv("SOAR_TEST_POSTGRES_URL"),
+    reason="Set SOAR_TEST_POSTGRES_URL to a throwaway Postgres DB (never production) to run.",
+)
+def test_postgres_repository_analyst_workflow(tmp_path):
+    workspace = f"pgtest-{uuid4().hex[:8]}"
+    repository = SupabaseIncidentRepository(os.environ["SOAR_TEST_POSTGRES_URL"])
+    service = SoarWorkflowService(
+        verbose=False,
+        repository=repository,
+        policy_engine=PolicyEngine(
+            verbose=False,
+            policy_config_path=_queued_policy_config_path(tmp_path),
+            queue_publisher=RepositoryQueuePublisher(repository),
+        ),
+    )
+
+    def process(seed: int, suffix: str):
+        alert = generate_alert(scenario="malicious_hash", seed=seed).model_copy(
+            update={"alert_id": f"{workspace}-{suffix}"}
+        )
+        service.process_alert(alert, generate_report=False, export_pdf=False, workspace=workspace)
+        incident = repository.get_incident_by_alert_id(alert.alert_id)
+        action = next(a for a in incident["action_results"] if a["action"] == "isolate_host")
+        assert action["status"] == "waiting_approval"
+        return alert.alert_id, action["correlation_id"]
+
+    def action_status(alert_id: str, correlation_id: str) -> str:
+        incident = repository.get_incident_by_alert_id(alert_id)
+        return next(a["status"] for a in incident["action_results"] if a["correlation_id"] == correlation_id)
+
+    try:
+        approve_id, approve_cid = process(5153, "approve")
+        reject_id, reject_cid = process(5154, "reject")
+        rollback_id, rollback_cid = process(5155, "rollback")
+
+        repository.approve_action_job(approve_id, approve_cid, actor="analyst", comment="ok")
+        repository.reject_action_job(reject_id, reject_cid, actor="analyst", comment="no")
+        repository.rollback_action_job(rollback_id, rollback_cid, actor="analyst", comment="cancel")
+        assert action_status(approve_id, approve_cid) == "queued"
+        assert action_status(reject_id, reject_cid) == "failed"
+        assert action_status(rollback_id, rollback_cid) == "skipped"
+        with pytest.raises(ValueError):
+            repository.approve_action_job(approve_id, approve_cid, actor="analyst")  # no longer waiting
+        # Only the approved job is claimable; rejected/cancelled jobs never reach the worker.
+        claimed = repository.claim_next_action_job(worker_id="test-worker")
+        assert claimed["correlation_id"] == approve_cid
+        assert repository.claim_next_action_job(worker_id="test-worker") is None
+
+        note = repository.add_incident_note(approve_id, author="analyst", body="triage")
+        repository.update_incident_case(approve_id, case_status="resolved", case_owner="tier2", actor="analyst")
+        repository.bulk_update_incidents([reject_id], case_status="in_progress", actor="analyst")
+        reopened = repository.reopen_incident(approve_id, actor="analyst", comment="again")
+        assert reopened["case_status"] == "in_progress"
+        assert [n["note_id"] for n in reopened["notes"]] == [note["note_id"]]
+        categories = {e["category"] for e in reopened["audit_events"]}
+        assert {"approval.approved", "case.note_added", "case.updated", "case.reopened"} <= categories
+        # Audit events form a hash chain.
+        events = sorted(reopened["audit_events"], key=lambda e: e["created_at"])
+        assert all(later["previous_event_hash"] == earlier["event_hash"] for earlier, later in zip(events, events[1:]))
+        assert repository.escalate_overdue_approvals(actor="system") == []
+
+        first = repository.save_filter(name="open", filters={"risk": "high"}, created_by="a", workspace=workspace)
+        again = repository.save_filter(name="open", filters={"risk": "low"}, created_by="a", workspace=workspace)
+        assert again["id"] == first["id"] and again["filters"] == {"risk": "low"}
+        assert [f["name"] for f in repository.list_saved_filters(workspaces=[workspace])] == ["open"]
+    finally:
+        with repository._db.connect() as conn:
+            conn.execute("DELETE FROM alerts WHERE workspace = %s", (workspace,))
+            conn.execute("DELETE FROM saved_filters WHERE workspace = %s", (workspace,))

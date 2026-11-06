@@ -102,8 +102,8 @@ The main runtime entrypoints are:
 - If `SOAR_DB_TARGET` points to a file path, the app uses SQLite.
 - If `SOAR_DB_TARGET` is a Postgres DSN, the app uses Postgres.
 - If `SOAR_DB_TARGET` is unset, the app tries `SOAR_DATABASE_URL`, then `SUPABASE_DB_URL`, then falls back to `SOAR_SQLITE_FALLBACK_PATH`.
-- SQLite currently has the most complete analyst workflow support.
-- The Postgres repository currently supports ingestion, read/list flows, and queue persistence, but several analyst mutation methods are still not implemented.
+- SQLite and Postgres both support the full analyst workflow (notes, approvals, rollback, reopen, bulk update, saved filters, audit trail).
+- Postgres schema comes from `migrations/postgres/`; run `python3 scripts/apply_postgres_migrations.py` after pulling new migrations.
 
 ## Features
 
@@ -117,7 +117,7 @@ The main runtime entrypoints are:
 - Incident correlation and incident re-open/attach logic
 - Markdown, HTML, and optional PDF report generation
 - SQLite and Postgres persistence paths
-- Full analyst mutation workflow on SQLite, with a partial Postgres implementation
+- Full analyst mutation workflow on SQLite and Postgres
 - Role-based API access with workspace scoping
 - React dashboard for intake, queue review, incident detail, notes, approvals, and saved filters
 - Docker, GitHub Actions CI, and remote release-compose deployment assets
@@ -183,7 +183,7 @@ The main runtime entrypoints are:
 
 ### Current persistence limitation
 
-SQLite currently has the most complete analyst workflow support. The Postgres repository implementation supports workflow ingestion, listing, readback, and queue persistence, but case mutations, notes, approvals, reopen, bulk update, and saved-filter writes are still marked `NotImplemented` in `storage/incident_repository.py`.
+Both repositories implement the full analyst workflow. Postgres tests are opt-in: set `SOAR_TEST_POSTGRES_URL` to a throwaway database (never production) and run `pytest tests/test_workflow_service.py -k postgres`.
 
 ### Frontend model
 

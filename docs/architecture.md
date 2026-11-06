@@ -50,7 +50,7 @@ Repository selection in `create_incident_repository(...)` works like this:
 Current implementation note:
 
 - SQLite supports the full analyst mutation workflow.
-- The Postgres repository currently covers ingestion, read/list operations, and queue persistence, but several analyst mutation methods still raise `NotImplementedError`.
+- The Postgres repository covers ingestion, read/list operations, queue persistence, and the analyst workflow (notes, approvals, rollback, reopen, bulk update, saved filters, audit trail).
 
 ## Deployment Architecture
 

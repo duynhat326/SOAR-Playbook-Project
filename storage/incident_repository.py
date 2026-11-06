@@ -1,22 +1,27 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import UTC, datetime
+from uuid import uuid4
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Optional, Protocol, Sequence
 
 from psycopg.types.json import Jsonb
 
 from schemas.alert import (
+    ActionApprovalState,
     ActionResult,
     CorrelationOutcome,
+    IncidentAuditEvent,
     IncidentCaseStatus,
+    IncidentNote,
     QueuedActionRequest,
     ResponseAction,
 )
 from storage.postgres import PostgresDatabase, is_postgres_target, resolve_database_url
-from storage.sqlite_repository import MAX_INCIDENT_LIST_LIMIT, SQLiteIncidentRepository
+from storage.sqlite_repository import _ACTION_STATUS_SUCCESS, MAX_INCIDENT_LIST_LIMIT, SQLiteIncidentRepository
 from time_utils import utc_now
 from workspace_utils import effective_workspaces, normalize_workspace
 
@@ -538,6 +543,54 @@ class SupabaseIncidentRepository:
                     ),
                 )
 
+            has_audit = conn.execute(
+                "SELECT 1 FROM audit_events WHERE incident_id = %s LIMIT 1", (incident_id,)
+            ).fetchone() is not None
+            if existing_incident is None or not has_audit:
+                self._append_audit_event(
+                    conn,
+                    incident_id=incident_id,
+                    alert_id=alert.alert_id,
+                    category="correlation.new_incident",
+                    actor="soar-workflow",
+                    message=(
+                        f"New incident created for host '{alert.hostname}' with risk "
+                        f"{enriched.risk_level} ({enriched.risk_score:.1f})."
+                    ),
+                    payload={
+                        "risk_level": enriched.risk_level,
+                        "risk_score": enriched.risk_score,
+                        "ticket_id": stored_ticket_id,
+                        "incident_key": incident_key,
+                    },
+                )
+            elif outcome in {
+                CorrelationOutcome.ATTACHED_TO_EXISTING.value,
+                CorrelationOutcome.REOPENED_INCIDENT.value,
+            }:
+                self._append_audit_event(
+                    conn,
+                    incident_id=incident_id,
+                    alert_id=alert.alert_id,
+                    category=f"correlation.{outcome}",
+                    actor="soar-workflow",
+                    message=(
+                        f"Alert '{alert.alert_id}' correlated into incident '{incident_key}' "
+                        f"using window {correlation_trace.window}."
+                    ),
+                    payload=correlation_trace.model_dump(mode="json"),
+                )
+            for action_result in response.action_results:
+                self._append_audit_event(
+                    conn,
+                    incident_id=incident_id,
+                    alert_id=alert.alert_id,
+                    category=f"action.{self._normalize_action_status(action_result.status)}",
+                    actor="policy-engine",
+                    message=f"Action '{action_result.action.value}' recorded as '{action_result.status}'.",
+                    payload=action_result.model_dump(mode="json"),
+                )
+
         return incident_id
 
     def enqueue_action_job(
@@ -552,15 +605,27 @@ class SupabaseIncidentRepository:
             raise ValueError("Queued action payload must include alert_id.")
 
         timestamp = self._utc_now()
+        # Approval-gated actions must not be claimable by the worker until an analyst approves them.
+        queue_status = (
+            "waiting_approval"
+            if request.requires_approval and request.approval_state != ActionApprovalState.APPROVED
+            else "queued"
+        )
         with self._db.connect() as conn:
             conn.execute(
                 """
                 INSERT INTO queue_jobs (
                     alert_id, action, queue_name, correlation_id, deduplication_key,
                     request_json, payload_json, status, available_at, locked_at,
-                    worker_id, attempt_count, max_attempts, last_error, dead_lettered_at,
-                    created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'queued', %s, NULL, NULL, 0, %s, NULL, NULL, %s, %s)
+                    worker_id, attempt_count, max_attempts, requires_approval,
+                    approval_state, approval_reason, approved_by, approved_at,
+                    approval_due_at, approval_escalates_at, escalation_targets_json,
+                    approval_escalated_at, approval_comment, rollback_requested_by,
+                    rollback_requested_at, last_error, dead_lettered_at, created_at, updated_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, 0, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, NULL, NULL, %s, %s
+                )
                 ON CONFLICT (correlation_id) DO NOTHING
                 """,
                 (
@@ -571,8 +636,21 @@ class SupabaseIncidentRepository:
                     request.deduplication_key,
                     Jsonb(request.model_dump(mode="json")),
                     Jsonb(request.payload),
+                    queue_status,
                     available_at,
                     max_attempts,
+                    request.requires_approval,
+                    request.approval_state.value,
+                    request.approval_reason,
+                    request.approved_by,
+                    request.approved_at,
+                    request.approval_due_at,
+                    request.approval_escalates_at,
+                    Jsonb(list(request.escalation_targets)),
+                    request.approval_escalated_at,
+                    request.approval_comment,
+                    request.rollback_requested_by,
+                    request.rollback_requested_at,
                     timestamp,
                     timestamp,
                 ),
@@ -1057,7 +1135,26 @@ class SupabaseIncidentRepository:
         actor: str,
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
-        raise NotImplementedError("Case management mutations are currently supported on the SQLite repository.")
+        with self._db.connect() as conn:
+            row = self._resolve_incident_row(conn, alert_id)
+            if row is None:
+                return None
+            next_status = case_status or row["case_status"] or IncidentCaseStatus.NEW.value
+            next_owner = case_owner if case_owner is not None else row["case_owner"]
+            conn.execute(
+                "UPDATE incidents SET case_status = %s, case_owner = %s, updated_at = %s WHERE id = %s",
+                (next_status, next_owner, self._utc_now(), row["id"]),
+            )
+            self._append_audit_event(
+                conn,
+                incident_id=row["id"],
+                alert_id=alert_id,
+                category="case.updated",
+                actor=actor,
+                message=comment or "Case metadata updated.",
+                payload={"case_status": next_status, "case_owner": next_owner, "comment": comment},
+            )
+        return self.get_incident_by_alert_id(alert_id)
 
     def add_incident_note(
         self,
@@ -1066,7 +1163,28 @@ class SupabaseIncidentRepository:
         author: str,
         body: str,
     ) -> Optional[dict[str, Any]]:
-        raise NotImplementedError("Incident notes are currently supported on the SQLite repository.")
+        note = IncidentNote(author=author, body=body)
+        with self._db.connect() as conn:
+            row = self._resolve_incident_row(conn, alert_id)
+            if row is None:
+                return None
+            conn.execute(
+                """
+                INSERT INTO case_notes (note_id, incident_id, alert_id, author, body, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (note.note_id, row["id"], alert_id, note.author, note.body, note.created_at, note.updated_at),
+            )
+            self._append_audit_event(
+                conn,
+                incident_id=row["id"],
+                alert_id=alert_id,
+                category="case.note_added",
+                actor=author,
+                message="Analyst note added to incident case.",
+                payload=note.model_dump(mode="json"),
+            )
+        return note.model_dump(mode="json")
 
     def bulk_update_incidents(
         self,
@@ -1077,7 +1195,33 @@ class SupabaseIncidentRepository:
         actor: str,
         comment: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        raise NotImplementedError("Bulk case updates are currently supported on the SQLite repository.")
+        updated_alert_ids: list[str] = []
+        with self._db.connect() as conn:
+            for alert_id in alert_ids:
+                row = self._resolve_incident_row(conn, alert_id)
+                if row is None:
+                    continue
+                next_status = case_status or row["case_status"] or IncidentCaseStatus.NEW.value
+                next_owner = case_owner if case_owner is not None else row["case_owner"]
+                conn.execute(
+                    "UPDATE incidents SET case_status = %s, case_owner = %s, updated_at = %s WHERE id = %s",
+                    (next_status, next_owner, self._utc_now(), row["id"]),
+                )
+                self._append_audit_event(
+                    conn,
+                    incident_id=row["id"],
+                    alert_id=alert_id,
+                    category="case.bulk_updated",
+                    actor=actor,
+                    message=comment or "Incident case updated through bulk triage.",
+                    payload={"case_status": next_status, "case_owner": next_owner},
+                )
+                updated_alert_ids.append(alert_id)
+        return [
+            incident
+            for alert_id in updated_alert_ids
+            if (incident := self.get_incident_by_alert_id(alert_id)) is not None
+        ]
 
     def approve_action_job(
         self,
@@ -1087,7 +1231,7 @@ class SupabaseIncidentRepository:
         actor: str,
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
-        raise NotImplementedError("Approval workflow is currently supported on the SQLite repository.")
+        return self._decide_action_job("approve", alert_id, correlation_id, actor=actor, comment=comment)
 
     def reject_action_job(
         self,
@@ -1097,7 +1241,7 @@ class SupabaseIncidentRepository:
         actor: str,
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
-        raise NotImplementedError("Approval workflow is currently supported on the SQLite repository.")
+        return self._decide_action_job("reject", alert_id, correlation_id, actor=actor, comment=comment)
 
     def rollback_action_job(
         self,
@@ -1107,7 +1251,7 @@ class SupabaseIncidentRepository:
         actor: str,
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
-        raise NotImplementedError("Rollback workflow is currently supported on the SQLite repository.")
+        return self._decide_action_job("rollback", alert_id, correlation_id, actor=actor, comment=comment)
 
     def reopen_incident(
         self,
@@ -1116,14 +1260,95 @@ class SupabaseIncidentRepository:
         actor: str,
         comment: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
-        raise NotImplementedError("Incident reopen workflow is currently supported on the SQLite repository.")
+        with self._db.connect() as conn:
+            row = self._resolve_incident_row(conn, alert_id)
+            if row is None:
+                return None
+            current_case_status = str(row["case_status"] or IncidentCaseStatus.NEW.value)
+            if current_case_status not in {IncidentCaseStatus.RESOLVED.value, IncidentCaseStatus.CLOSED.value}:
+                raise ValueError(
+                    f"Incident '{alert_id}' cannot be reopened from case status '{current_case_status}'."
+                )
+            next_case_status = IncidentCaseStatus.IN_PROGRESS.value
+            conn.execute(
+                """
+                UPDATE incidents
+                SET case_status = %s,
+                    status = CASE WHEN status = 'completed' THEN 'attention' ELSE status END,
+                    updated_at = %s
+                WHERE id = %s
+                """,
+                (next_case_status, self._utc_now(), row["id"]),
+            )
+            self._append_audit_event(
+                conn,
+                incident_id=row["id"],
+                alert_id=alert_id,
+                category="case.reopened",
+                actor=actor,
+                message=comment or "Incident reopened for analyst follow-up.",
+                payload={
+                    "previous_case_status": current_case_status,
+                    "case_status": next_case_status,
+                    "case_owner": row["case_owner"],
+                    "comment": comment,
+                },
+            )
+        return self.get_incident_by_alert_id(alert_id)
 
-    def escalate_overdue_approvals(
-        self,
-        *,
-        actor: str,
-    ) -> list[dict[str, Any]]:
-        raise NotImplementedError("Approval escalation is currently supported on the SQLite repository.")
+    def escalate_overdue_approvals(self, *, actor: str) -> list[dict[str, Any]]:
+        escalation_time = utc_now()
+        affected_alert_ids: list[str] = []
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM queue_jobs
+                WHERE status = 'waiting_approval'
+                  AND approval_escalates_at IS NOT NULL
+                  AND approval_escalates_at <= %s
+                  AND approval_escalated_at IS NULL
+                ORDER BY approval_escalates_at ASC, id ASC
+                FOR UPDATE
+                """,
+                (escalation_time,),
+            ).fetchall()
+            for row in rows:
+                targets = SQLiteIncidentRepository._parse_string_list(row["escalation_targets_json"])
+                request = self._queue_request_from_row(row).model_copy(
+                    update={"approval_escalated_at": escalation_time}
+                )
+                conn.execute(
+                    "UPDATE queue_jobs SET approval_escalated_at = %s, updated_at = %s, request_json = %s WHERE id = %s",
+                    (escalation_time, self._utc_now(), Jsonb(request.model_dump(mode="json")), row["id"]),
+                )
+                result = self._action_result_from_row(
+                    row,
+                    status="waiting_approval",
+                    executed_at=row["created_at"] or escalation_time,
+                    details=(
+                        f"Approval SLA breached for '{row['action']}'. Escalated to "
+                        f"{', '.join(targets) if targets else 'configured escalation path'}."
+                    ),
+                    operator=actor,
+                    approval_escalated_at=escalation_time,
+                    updated_at=escalation_time,
+                )
+                self._upsert_action_result_for_alert(conn, row["alert_id"], result)
+                self._append_queue_audit_event(
+                    conn,
+                    row=row,
+                    category="approval.escalated",
+                    actor=actor,
+                    message=f"Approval for '{row['action']}' exceeded SLA and was escalated.",
+                    payload={**result.model_dump(mode="json"), "escalation_targets": targets},
+                )
+                if row["alert_id"] not in affected_alert_ids:
+                    affected_alert_ids.append(str(row["alert_id"]))
+        return [
+            incident
+            for affected_alert_id in affected_alert_ids
+            if (incident := self.get_incident_by_alert_id(affected_alert_id)) is not None
+        ]
 
     def save_filter(
         self,
@@ -1133,14 +1358,250 @@ class SupabaseIncidentRepository:
         created_by: str,
         workspace: str,
     ) -> dict[str, Any]:
-        raise NotImplementedError("Saved filters are currently supported on the SQLite repository.")
+        timestamp = self._utc_now()
+        with self._db.connect() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO saved_filters (workspace, name, filters_json, created_by, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (workspace, name) DO UPDATE SET
+                    filters_json = EXCLUDED.filters_json,
+                    created_by = EXCLUDED.created_by,
+                    updated_at = EXCLUDED.updated_at
+                RETURNING id, workspace, name, filters_json, created_by, created_at, updated_at
+                """,
+                (normalize_workspace(workspace), name, Jsonb(filters), created_by, timestamp, timestamp),
+            ).fetchone()
+        return self._deserialize_saved_filter(row)
 
-    def list_saved_filters(
+    def list_saved_filters(self, *, workspaces: Optional[Sequence[str]] = None) -> list[dict[str, Any]]:
+        scoped = [w for w in effective_workspaces(workspaces) if w != "*"]
+        query = "SELECT id, workspace, name, filters_json, created_by, created_at, updated_at FROM saved_filters"
+        params: tuple[Any, ...] = ()
+        if scoped:
+            query += " WHERE workspace = ANY(%s)"
+            params = (scoped,)
+        with self._db.connect() as conn:
+            rows = conn.execute(f"{query} ORDER BY updated_at DESC, id DESC", params).fetchall()
+        return [self._deserialize_saved_filter(row) for row in rows]
+
+    def _deserialize_saved_filter(self, row: dict[str, Any]) -> dict[str, Any]:
+        record = self._serialize_record(dict(row))
+        return {
+            "id": record["id"],
+            "name": record["name"],
+            "workspace": normalize_workspace(record.get("workspace")),
+            "filters": self._as_json_payload(record["filters_json"]),
+            "created_by": record["created_by"],
+            "created_at": record["created_at"],
+            "updated_at": record["updated_at"],
+        }
+
+    # -- approval / rollback plumbing ------------------------------------------------
+
+    def _decide_action_job(
         self,
+        decision: str,
+        alert_id: str,
+        correlation_id: str,
         *,
-        workspaces: Optional[list[str] | tuple[str, ...] | frozenset[str]] = None,
-    ) -> list[dict[str, Any]]:
-        return []
+        actor: str,
+        comment: Optional[str],
+    ) -> Optional[dict[str, Any]]:
+        now = utc_now()
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM queue_jobs WHERE alert_id = %s AND correlation_id = %s FOR UPDATE",
+                (alert_id, correlation_id),
+            ).fetchone()
+            if row is None:
+                return None
+            action = str(row["action"])
+
+            if decision == "rollback":
+                current_status = str(row["status"] or "")
+                if current_status not in {"queued", "waiting_approval", "retry_pending"}:
+                    raise ValueError(
+                        f"Queued action {correlation_id} cannot be rolled back from status '{current_status}'."
+                    )
+                state = (
+                    ActionApprovalState.REJECTED
+                    if current_status == "waiting_approval" and row["requires_approval"]
+                    else SQLiteIncidentRepository._parse_approval_state(row["approval_state"])
+                )
+                next_comment = comment if comment is not None else row["approval_comment"]
+                queue_status, result_status = "cancelled", "skipped"
+                details = comment or f"Action '{action}' was cancelled before execution."
+                category, message = "queue.cancelled", f"Action '{action}' cancelled before execution."
+                changes: dict[str, Any] = {"rollback_requested_by": actor, "rollback_requested_at": now}
+            else:
+                SQLiteIncidentRepository._ensure_action_job_can_transition(
+                    row, expected_status="waiting_approval", decision=decision
+                )
+                next_comment = comment
+                changes = {"approved_by": actor, "approved_at": now}
+                if decision == "approve":
+                    state, queue_status, result_status = ActionApprovalState.APPROVED, "queued", "queued"
+                    details = comment or f"Action '{action}' approved and returned to queue."
+                    category, message = "approval.approved", f"Action '{action}' approved by analyst."
+                else:
+                    state, queue_status, result_status = ActionApprovalState.REJECTED, "rejected", "failed"
+                    details = comment or f"Action '{action}' was rejected by analyst approval."
+                    category, message = "approval.rejected", f"Action '{action}' rejected by analyst."
+            changes.update(approval_state=state, approval_comment=next_comment)
+
+            request = self._queue_request_from_row(row).model_copy(update=changes)
+            columns = {**changes, "approval_state": state.value, "status": queue_status, "updated_at": self._utc_now()}
+            assignments = ", ".join(f"{name} = %s" for name in (*columns, "request_json"))
+            conn.execute(
+                f"UPDATE queue_jobs SET {assignments} WHERE correlation_id = %s",
+                (*columns.values(), Jsonb(request.model_dump(mode="json")), correlation_id),
+            )
+            result = self._action_result_from_row(
+                row,
+                status=result_status,
+                executed_at=now,
+                details=details,
+                operator=actor,
+                updated_at=now,
+                **changes,
+            )
+            self._upsert_action_result_for_alert(conn, alert_id, result)
+            self._append_queue_audit_event(
+                conn,
+                row=row,
+                category=category,
+                actor=actor,
+                message=message,
+                payload={**result.model_dump(mode="json"), "comment": comment},
+            )
+        return self.get_incident_by_alert_id(alert_id)
+
+    def _queue_request_from_row(self, row: dict[str, Any]) -> QueuedActionRequest:
+        parse = SQLiteIncidentRepository._parse_string_list
+        request = QueuedActionRequest.model_validate(self._as_json_payload(row["request_json"]))
+        return request.model_copy(
+            update={
+                "requires_approval": bool(row["requires_approval"]),
+                "approval_state": SQLiteIncidentRepository._parse_approval_state(row["approval_state"]),
+                "approval_reason": row["approval_reason"],
+                "approval_comment": row["approval_comment"],
+                "approved_by": row["approved_by"],
+                "approved_at": row["approved_at"],
+                "approval_due_at": row["approval_due_at"],
+                "approval_escalates_at": row["approval_escalates_at"],
+                "escalation_targets": parse(row["escalation_targets_json"]),
+                "approval_escalated_at": row["approval_escalated_at"],
+                "rollback_requested_by": row["rollback_requested_by"],
+                "rollback_requested_at": row["rollback_requested_at"],
+            }
+        )
+
+    def _action_result_from_row(self, row: dict[str, Any], **overrides: Any) -> ActionResult:
+        """Build the ActionResult for a queue job, with `overrides` replacing the row's approval fields."""
+        fields: dict[str, Any] = {
+            "action": ResponseAction(str(row["action"])),
+            "correlation_id": row["correlation_id"],
+            "attempt_count": int(row["attempt_count"] or 0),
+            "requires_approval": bool(row["requires_approval"]),
+            "approval_state": SQLiteIncidentRepository._parse_approval_state(row["approval_state"]),
+            "approval_reason": row["approval_reason"],
+            "approval_comment": row["approval_comment"],
+            "approved_by": row["approved_by"],
+            "approved_at": row["approved_at"],
+            "approval_due_at": row["approval_due_at"],
+            "approval_escalates_at": row["approval_escalates_at"],
+            "escalation_targets": SQLiteIncidentRepository._parse_string_list(row["escalation_targets_json"]),
+            "approval_escalated_at": row["approval_escalated_at"],
+            "rollback_requested_by": row["rollback_requested_by"],
+            "rollback_requested_at": row["rollback_requested_at"],
+        }
+        fields.update(overrides)
+        return ActionResult(**fields)
+
+    # -- incident lookup / audit helpers ---------------------------------------------
+
+    def _resolve_incident_row(self, conn: Any, alert_id: str) -> Optional[dict[str, Any]]:
+        return conn.execute(
+            """
+            SELECT incidents.* FROM incidents
+            WHERE incidents.alert_id = %s
+               OR incidents.latest_alert_id = %s
+               OR incidents.id IN (SELECT incident_id FROM incident_alerts WHERE alert_id = %s)
+            ORDER BY incidents.updated_at DESC, incidents.id DESC
+            LIMIT 1
+            """,
+            (alert_id, alert_id, alert_id),
+        ).fetchone()
+
+    def _append_queue_audit_event(
+        self,
+        conn: Any,
+        *,
+        row: dict[str, Any],
+        category: str,
+        actor: str,
+        message: str,
+        payload: dict[str, Any],
+    ) -> None:
+        incident_row = self._resolve_incident_row(conn, row["alert_id"])
+        if incident_row is not None:
+            self._append_audit_event(
+                conn,
+                incident_id=incident_row["id"],
+                alert_id=row["alert_id"],
+                category=category,
+                actor=actor,
+                message=message,
+                payload=payload,
+            )
+
+    def _append_audit_event(
+        self,
+        conn: Any,
+        *,
+        incident_id: int,
+        alert_id: str,
+        category: str,
+        actor: str,
+        message: str,
+        payload: dict[str, Any],
+    ) -> None:
+        previous = conn.execute(
+            "SELECT event_hash FROM audit_events WHERE incident_id = %s ORDER BY created_at DESC LIMIT 1",
+            (incident_id,),
+        ).fetchone()
+        event = IncidentAuditEvent(
+            event_id=f"audit-{uuid4().hex}",
+            category=category,
+            actor=actor,
+            message=message,
+            payload=payload,
+            previous_event_hash=previous["event_hash"] if previous else None,
+        )
+        event_hash = SQLiteIncidentRepository._build_audit_event_hash(
+            event, alert_id=alert_id, incident_id=incident_id
+        )
+        conn.execute(
+            """
+            INSERT INTO audit_events (
+                event_id, incident_id, alert_id, category, actor, message, payload_json,
+                previous_event_hash, event_hash, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                event.event_id,
+                incident_id,
+                alert_id,
+                event.category,
+                event.actor,
+                event.message,
+                Jsonb(event.payload),
+                event.previous_event_hash,
+                event_hash,
+                event.created_at,
+            ),
+        )
 
     def _deserialize_incident(
         self,
@@ -1148,26 +1609,24 @@ class SupabaseIncidentRepository:
         row: dict[str, Any],
     ) -> dict[str, Any]:
         result = self._serialize_record(dict(row))
+        result["related_alert_ids"] = [
+            r["alert_id"]
+            for r in conn.execute(
+                "SELECT alert_id FROM incident_alerts WHERE incident_id = %s ORDER BY linked_at ASC, id ASC",
+                (result["id"],),
+            ).fetchall()
+        ]
         result = self._normalize_incident_defaults(result)
         result["workspace"] = normalize_workspace(result.get("workspace"))
-        result["triggered_actions"] = self._as_json_payload(
-            result.pop("triggered_actions_json")
-        )
-        result["policy_reasoning"] = self._as_json_payload(
-            result.pop("policy_reasoning_json")
-        )
+        result["triggered_actions"] = self._as_json_payload(result.pop("triggered_actions_json"))
+        result["policy_reasoning"] = self._as_json_payload(result.pop("policy_reasoning_json"))
         result["alert"] = self._as_json_payload(result.pop("alert_json"))
         result["enriched_alert"] = self._as_json_payload(result.pop("enriched_json"))
         result["response"] = self._as_json_payload(result.pop("response_json"))
         result["action_results"] = [
-            self._serialize_record(dict(action_row))
-            for action_row in conn.execute(
-                """
-                SELECT action, status, executed_at, details, correlation_id, attempt_count, updated_at
-                FROM action_results
-                WHERE incident_id = %s
-                ORDER BY id ASC
-                """,
+            self._as_json_payload(r["raw_json"])
+            for r in conn.execute(
+                "SELECT raw_json FROM action_results WHERE incident_id = %s ORDER BY id ASC",
                 (result["id"],),
             ).fetchall()
         ]
@@ -1177,13 +1636,40 @@ class SupabaseIncidentRepository:
             "pdf_path": result["pdf_path"],
             "markdown_content": result["markdown_content"],
         }
-        result["notes"] = []
-        result["audit_events"] = []
-        result["note_count"] = 0
-        result["pending_approval_count"] = sum(
-            1
-            for action in result["action_results"]
-            if self._normalize_action_status(action.get("status")) == "waiting_approval"
+        result["notes"] = [
+            self._serialize_record(dict(r))
+            for r in conn.execute(
+                """
+                SELECT note_id, author, body, created_at, updated_at
+                FROM case_notes WHERE incident_id = %s ORDER BY created_at DESC
+                """,
+                (result["id"],),
+            ).fetchall()
+        ]
+        result["audit_events"] = [
+            {**self._serialize_record(dict(r)), "payload": self._as_json_payload(r["payload_json"])}
+            for r in conn.execute(
+                """
+                SELECT event_id, category, actor, message, payload_json, previous_event_hash, event_hash, created_at
+                FROM audit_events WHERE incident_id = %s ORDER BY created_at DESC
+                """,
+                (result["id"],),
+            ).fetchall()
+        ]
+        for event in result["audit_events"]:
+            event.pop("payload_json", None)
+        result["note_count"] = len(result["notes"])
+        counts: dict[str, int] = {}
+        for action in result["action_results"]:
+            status = self._normalize_action_status(action.get("status"))
+            counts[status] = counts.get(status, 0) + 1
+        result["pending_approval_count"] = counts.get("waiting_approval", 0)
+        result["queued_action_count"] = counts.get("queued", 0)
+        result["running_action_count"] = counts.get("running", 0)
+        result["failed_action_count"] = counts.get("failed", 0)
+        result["succeeded_action_count"] = sum(counts.get(name, 0) for name in _ACTION_STATUS_SUCCESS)
+        result["active_action_count"] = (
+            result["queued_action_count"] + result["running_action_count"] + result["pending_approval_count"]
         )
         return result
 
