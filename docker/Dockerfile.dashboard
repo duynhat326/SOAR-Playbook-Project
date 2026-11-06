@@ -3,7 +3,8 @@ FROM node:20-alpine AS build
 WORKDIR /app/dashboard
 
 COPY dashboard/package.json dashboard/package-lock.json ./
-RUN npm ci
+# The build needs devDependencies (tsc, vite); fail here, not later, if they were skipped.
+RUN npm ci --include=dev && test -x node_modules/.bin/tsc
 
 ARG VITE_SOAR_API_BASE_URL=/soar-api
 ENV VITE_SOAR_API_BASE_URL=${VITE_SOAR_API_BASE_URL}

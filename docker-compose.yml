@@ -6,6 +6,9 @@ services:
       target: api
     env_file:
       - config/environments/development.env
+      # Optional, git-ignored overrides (real Supabase/VirusTotal credentials); later files win.
+      - path: config/environments/local.env
+        required: false
     ports:
       - "8000:8000"
     volumes:
@@ -29,6 +32,9 @@ services:
       target: worker
     env_file:
       - config/environments/development.env
+      # Optional, git-ignored overrides (real Supabase/VirusTotal credentials); later files win.
+      - path: config/environments/local.env
+        required: false
     volumes:
       - soar_output:/app/output
     depends_on:

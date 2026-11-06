@@ -28,3 +28,7 @@ For Postgres-backed local verification with Docker Compose:
 docker compose -f docker-compose.yml -f docker-compose.postgres.yml --profile postgres up -d
 python scripts/apply_postgres_migrations.py
 ```
+
+## Real credentials locally (Docker)
+
+Create `config/environments/local.env` (git-ignored) with e.g. `SOAR_DB_TARGET=`, `SUPABASE_DB_URL`, `SOAR_INTEL_PROVIDER=virustotal`, `VIRUSTOTAL_API_KEY` and your own `SOAR_AUTH_TOKENS_JSON`. `docker compose up --build` loads it after `development.env` when it exists; without it the stack runs on mock data.
