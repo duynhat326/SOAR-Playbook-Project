@@ -11,8 +11,6 @@
 ![pytest](https://img.shields.io/badge/pytest-131%20tests%20passing-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
 ![Security](https://img.shields.io/badge/RBAC-Enabled-8B5CF6?style=for-the-badge)
 
-**Blue Team CV Project for SOC analyst workflow automation**
-
 *An end-to-end SOAR playbook for malware alerts, from intake and enrichment to policy response, persistence, and analyst review.*
 
 </div>
